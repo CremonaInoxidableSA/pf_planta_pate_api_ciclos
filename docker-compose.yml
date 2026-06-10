@@ -1,0 +1,55 @@
+networks:
+  bridge_network:
+    driver: bridge
+
+  macvlan_network:
+    driver: macvlan
+    driver_opts:
+      parent: eno1
+    ipam:
+      config:
+        - subnet: 192.168.10.0/24
+          gateway: 192.168.10.60
+
+services:
+  db:
+    image: mysql:8.0.32
+    container_name: mysql_container
+    restart: always
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - bridge_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+
+  fastapi_app:
+    build: .
+    container_name: fastapi_container
+    restart: always
+    depends_on:
+      - db
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    command: >
+      uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      bridge_network:
+      macvlan_network:
+        ipv4_address: 192.168.10.115
+volumes:
+  mysql_data:

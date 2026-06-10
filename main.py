@@ -1,0 +1,226 @@
+from typing import Union
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Depends
+from fastapi.responses import StreamingResponse
+from datetime import date, datetime, time
+from contextlib import asynccontextmanager
+from sqlalchemy import text
+from starlette.middleware.cors import CORSMiddleware
+
+from config.opc import OPCUAClient
+from config.ws import ws_manager
+from config import db
+
+from services.opcClienteService import ObtenerNodosOpcUA
+from services.historicoServices import obtener_historico_alarmas, generar_reporte_alarmas_descarga
+
+from models.ciclo import Ciclo
+from models.sensoresIO import SensoresIO
+from models.sensoresAA import SensoresAA
+from models.sensores import Sensores
+from models.equipo import Equipo
+from models.receta import Receta
+from models.estadoCiclo import EstadoCiclo
+from models.alarmas import Alarmas
+from models.alarmasL2 import AlarmasL2
+from models.historicoAlarma import HistoricoAlarma
+
+from routers import equiposDatos, historicoGraficos, historicoProductividad
+
+
+import logging
+import asyncio
+
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+opc_ip   = os.getenv("OPC_SERVER_IP")
+opc_port = os.getenv("OPC_SERVER_PORT")
+
+ruta_principal = os.path.dirname(os.path.abspath(__file__))
+logger = logging.getLogger("uvicorn")
+
+
+URL        = f"opc.tcp://{opc_ip}:{opc_port}"
+opc_client = OPCUAClient(URL)
+
+db.Base.metadata.create_all(bind=db.engine)
+
+dGeneral = ObtenerNodosOpcUA(opc_client)
+
+ruta_sql_sensores = os.path.join(ruta_principal, 'data', 'insert_sensores.sql')
+ruta_sql_equipos  = os.path.join(ruta_principal, 'data', 'insert_equipos.sql')
+ruta_sql_alarmas_l1  = os.path.join(ruta_principal, 'data', 'insert_alarmas_l1.sql')
+ruta_sql_alarmas_l2  = os.path.join(ruta_principal, 'data', 'insert_alarmas_l2.sql')
+
+
+_reconexion_lock = asyncio.Lock()
+
+
+def cargar_archivo_sql(file_path: str):
+    try:
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding="utf-8") as f:
+                sql_script = f.read()
+            with db.engine.connect() as conn:
+                conn.execute(text(sql_script))
+                conn.commit()
+                logger.info(f"SQL ejecutado: {file_path}")
+        else:
+            logger.error(f"Archivo SQL no encontrado: {file_path}")
+    except Exception as e:
+        logger.error(f"Error al cargar SQL: {e}")
+
+
+async def central_opc_render():
+    """
+    Publica datos por WebSocket cada 1 s.
+    datosGenerales() solo lee el cache del handler — sin tráfico OPC.
+    Si el cache está vacío (post-caída), simplemente envía listas vacías
+    hasta que el monitor restaure la suscripción.
+    """
+    while True:
+        try:
+            datos = await dGeneral.datosGenerales()
+            await ws_manager.send_message("datos-generales", datos)
+        except Exception as e:
+            logger.error(f"Error en el loop WebSocket: {e}")
+        await asyncio.sleep(1.0)
+
+
+async def monitor_opc(period_ms: int = 500, check_interval: int = 10):
+    logger.info(f"Monitor OPC iniciado (ping cada {check_interval}s).")
+    while True:
+        await asyncio.sleep(check_interval)
+
+        alive = await opc_client.ping()
+        if alive:
+            continue
+
+        logger.warning("⚠️ Monitor OPC: ping fallido. Iniciando recuperación...")
+
+        if _reconexion_lock.locked():
+            logger.info("🔒 Reconexión ya en curso, saltando este ciclo.")
+            continue
+
+        async with _reconexion_lock:
+            try:
+                await opc_client.reconnect()
+
+                if not opc_client.connected:
+                    logger.error("❌ Reconexión fallida. Se reintentará en el próximo ciclo.")
+                    continue
+                await dGeneral.iniciar_suscripcion(period_ms=period_ms)
+
+                logger.info("✅ Recuperación OPC completada. Sistema reanudado.")
+
+            except Exception as e:
+                logger.error(f"❌ Error durante la recuperación OPC: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    session = db.SessionLocal()
+    try:
+        await opc_client.connect()
+        logger.info("Conectado al servidor OPC UA.")
+
+        await dGeneral.iniciar_suscripcion(period_ms=500)
+
+        asyncio.create_task(central_opc_render())
+        asyncio.create_task(monitor_opc(period_ms=500, check_interval=10))
+
+        if session.query(Sensores).count() == 0:
+            logger.info("Cargando registros BDD [Sensores]")
+            cargar_archivo_sql(ruta_sql_sensores)
+        if session.query(Equipo).count() == 0:
+            logger.info("Cargando registros BDD [Equipos]")
+            cargar_archivo_sql(ruta_sql_equipos)
+        if session.query(Alarmas).count() == 0:
+            logger.info("Cargando registros BDD [Alarmas_l1]")
+            cargar_archivo_sql(ruta_sql_alarmas_l1)
+        if session.query(AlarmasL2).count() == 0:
+            logger.info("Cargando registros BDD [Alarmas_l2]")
+            cargar_archivo_sql(ruta_sql_alarmas_l2)
+        yield
+
+    finally:
+        await opc_client.disconnect()
+        session.close()
+
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(historicoGraficos.RoutersGraficosH)
+app.include_router(historicoProductividad.RouterProductividad)
+
+@app.websocket("/ws/{id}")
+async def resumen_desmoldeo(websocket: WebSocket, id: str):
+    await websocket.accept()
+    await ws_manager.connect(id, websocket)
+    try:
+        while True:
+            await websocket.receive_json()
+            await ws_manager.send_message(id, "data")
+            await asyncio.sleep(0.2)
+    except WebSocketDisconnect:
+        await ws_manager.disconnect(id, websocket)
+
+
+@app.get("/")
+def read_root():
+    return {
+        "status":    "ok",
+        "message":   "Servidor levantado con suscripción OPC UA",
+        "opc_alive": opc_client.connected,
+    }
+
+@app.get("/alarmas")
+def listar_alarmas_bdd(
+    fecha_inicio: date = Query(..., description="Fecha de inicio (YYYY-MM-DD)"),
+    fecha_fin: date = Query(..., description="Fecha de fin (YYYY-MM-DD)"),
+):
+    logger.info(f"Endpoint /alarmas llamado con fecha_inicio={fecha_inicio} y fecha_fin={fecha_fin}")
+    if fecha_inicio is not None and fecha_fin is not None:
+        fecha_inicio_dt = datetime.combine(fecha_inicio, time.min)
+        fecha_fin_dt = datetime.combine(fecha_fin, datetime.max.time())
+
+        return obtener_historico_alarmas(fecha_inicio_dt, fecha_fin_dt, db.SessionLocal())
+    
+    return obtener_historico_alarmas(fecha_inicio, fecha_fin, db.SessionLocal())
+
+@app.get("/alarmas/defecto")
+def listar_todas_alarmas_bdd():
+    logger.info(f"Endpoint /alarmas/defecto llamado")
+    return obtener_historico_alarmas(fecha_inicio=None, fecha_fin=None, session=db.SessionLocal())
+
+
+@app.get("/alarmas/descargar")
+def descargar_alarmas_excel(
+    fecha_inicio: date = Query(..., description="Fecha de inicio (YYYY-MM-DD)"),
+    fecha_fin: date = Query(..., description="Fecha de fin (YYYY-MM-DD)"),
+
+):
+    logger.info(f"Endpoint /alarmas/descargar llamado con fecha_inicio={fecha_inicio} y fecha_fin={fecha_fin}")
+    if fecha_inicio is not None and fecha_fin is not None:
+        fecha_inicio_dt = datetime.combine(fecha_inicio, time.min)
+        fecha_fin_dt = datetime.combine(fecha_fin, datetime.max.time())
+        xlms_stream = generar_reporte_alarmas_descarga(db.SessionLocal(), fecha_inicio_dt, fecha_fin_dt)
+        fecha_actual = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        nombreArchivo = f"informe_alarmas_{fecha_actual}.xlsx"
+
+        return StreamingResponse(
+            xlms_stream, 
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+            headers={"Content-Disposition": f"attachment; filename={nombreArchivo}"}
+        )
+    else:
+        return {"error": "Fechas no válidas. Asegúrese de proporcionar fecha_inicio y fecha_fin."}

@@ -1,0 +1,90 @@
+[
+  {
+    "id_historial": 1,
+    "tiempo": "2026-04-14 12:34:21",
+    "estado": "PRE OPERACIONAL",
+    "idCiclo": 6293,
+    "lote": "ENF-02-C0056",
+    "temp_agua": 24.0,
+    "temp_ingreso": 8.0,
+    "temp_prod": 0.0,
+    "niv_agua": 1614.010009765625
+  },
+  {
+    "id_historial": 2,
+    "tiempo": "2026-04-14 12:34:22",
+    "estado": "PRE OPERACIONAL",
+    "idCiclo": 6293,
+    "lote": "ENF-02-C0056",
+    "temp_agua": 23.270000457763672,
+    "temp_ingreso": 8.0,
+    "temp_prod": 0.0,
+    "niv_agua": 1586.1400146484375
+  },
+  {
+    "id_historial": 3,
+    "tiempo": "2026-04-14 12:34:23",
+    "estado": "PRE OPERACIONAL",
+    "idCiclo": 6293,
+    "lote": "ENF-02-C0056",
+    "temp_agua": 21.799999237060547,
+    "temp_ingreso": 8.0,
+    "temp_prod": 0.0,
+    "niv_agua": 1596.219970703125
+  },
+  {
+    "id_historial": 4,
+    "tiempo": "2026-04-14 12:34:24",
+    "estado": "PRE OPERACIONAL",
+    "idCiclo": 6293,
+    "lote": "ENF-02-C0056",
+    "temp_agua": 21.06999969482422,
+    "temp_ingreso": 8.0,
+    "temp_prod": 0.0,
+    "niv_agua": 1625.3299560546875
+  },
+  {
+    "id_historial": 5,
+    "tiempo": "2026-04-14 12:34:25",
+    "estado": "PRE OPERACIONAL",
+    "idCiclo": 6293,
+    "lote": "ENF-02-C0056",
+    "temp_agua": 20.329999923706055,
+    "temp_ingreso": 8.0,
+    "temp_prod": 0.0,
+    "niv_agua": 1596.93994140625
+  },
+  {
+    "id_historial": 6,
+    "tiempo": "2026-04-14 12:34:27",
+    "estado": "PRE OPERACIONAL",
+    "idCiclo": 6293,
+    "lote": "ENF-02-C0056",
+    "temp_agua": 18.8700008392334,
+    "temp_ingreso": 8.0,
+    "temp_prod": 0.0,
+    "niv_agua": 1607.4599609375
+  },
+  {
+    "id_historial": 7,
+    "tiempo": "2026-04-14 12:34:28",
+    "estado": "PRE OPERACIONAL",
+    "idCiclo": 6293,
+    "lote": "ENF-02-C0056",
+    "temp_agua": 18.1299991607666,
+    "temp_ingreso": 8.0,
+    "temp_prod": 0.0,
+    "niv_agua": 1570.9300537109375
+  },
+  {
+    "id_historial": 8,
+    "tiempo": "2026-04-14 12:34:29",
+    "estado": "PRE OPERACIONAL",
+    "idCiclo": 6293,
+    "lote": "ENF-02-C0056",
+    "temp_agua": 17.399999618530273,
+    "temp_ingreso": 8.0,
+    "temp_prod": 0.0,
+    "niv_agua": 1639.22998046875
+  }
+]
