@@ -11,7 +11,6 @@ from config.ws import ws_manager
 from config import db
 
 from services.opcClienteService import ObtenerNodosOpcUA
-from services.historicoServices import obtener_historico_alarmas, generar_reporte_alarmas_descarga
 
 from models.ciclo import Ciclo
 from models.sensoresIO import SensoresIO
@@ -24,8 +23,7 @@ from models.alarmas import Alarmas
 from models.alarmasL2 import AlarmasL2
 from models.historicoAlarma import HistoricoAlarma
 
-from routers import equiposDatos, historicoGraficos, historicoProductividad
-
+from routers import equiposDatos, historicoGraficos, historicoProductividad, historicoAlarmas
 
 import logging
 import asyncio
@@ -41,7 +39,6 @@ opc_port = os.getenv("OPC_SERVER_PORT")
 ruta_principal = os.path.dirname(os.path.abspath(__file__))
 logger = logging.getLogger("uvicorn")
 
-
 URL        = f"opc.tcp://{opc_ip}:{opc_port}"
 opc_client = OPCUAClient(URL)
 
@@ -54,9 +51,7 @@ ruta_sql_equipos  = os.path.join(ruta_principal, 'data', 'insert_equipos.sql')
 ruta_sql_alarmas_l1  = os.path.join(ruta_principal, 'data', 'insert_alarmas_l1.sql')
 ruta_sql_alarmas_l2  = os.path.join(ruta_principal, 'data', 'insert_alarmas_l2.sql')
 
-
 _reconexion_lock = asyncio.Lock()
-
 
 def cargar_archivo_sql(file_path: str):
     try:
@@ -161,6 +156,7 @@ app.add_middleware(
 
 app.include_router(historicoGraficos.RoutersGraficosH)
 app.include_router(historicoProductividad.RouterProductividad)
+app.include_router(historicoAlarmas.RouterAlarmas)
 
 @app.websocket("/ws/{id}")
 async def resumen_desmoldeo(websocket: WebSocket, id: str):
@@ -177,50 +173,26 @@ async def resumen_desmoldeo(websocket: WebSocket, id: str):
 
 @app.get("/")
 def read_root():
-    return {
-        "status":    "ok",
-        "message":   "Servidor levantado con suscripción OPC UA",
-        "opc_alive": opc_client.connected,
-    }
-
-@app.get("/alarmas")
-def listar_alarmas_bdd(
-    fecha_inicio: date = Query(..., description="Fecha de inicio (YYYY-MM-DD)"),
-    fecha_fin: date = Query(..., description="Fecha de fin (YYYY-MM-DD)"),
-):
-    logger.info(f"Endpoint /alarmas llamado con fecha_inicio={fecha_inicio} y fecha_fin={fecha_fin}")
-    if fecha_inicio is not None and fecha_fin is not None:
-        fecha_inicio_dt = datetime.combine(fecha_inicio, time.min)
-        fecha_fin_dt = datetime.combine(fecha_fin, datetime.max.time())
-
-        return obtener_historico_alarmas(fecha_inicio_dt, fecha_fin_dt, db.SessionLocal())
+    try:
+        with db.engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        estado_bdd = "Conectado"
+    except Exception as e:
+        estado_bdd = "Desconectado"
     
-    return obtener_historico_alarmas(fecha_inicio, fecha_fin, db.SessionLocal())
-
-@app.get("/alarmas/defecto")
-def listar_todas_alarmas_bdd():
-    logger.info(f"Endpoint /alarmas/defecto llamado")
-    return obtener_historico_alarmas(fecha_inicio=None, fecha_fin=None, session=db.SessionLocal())
-
-
-@app.get("/alarmas/descargar")
-def descargar_alarmas_excel(
-    fecha_inicio: date = Query(..., description="Fecha de inicio (YYYY-MM-DD)"),
-    fecha_fin: date = Query(..., description="Fecha de fin (YYYY-MM-DD)"),
-
-):
-    logger.info(f"Endpoint /alarmas/descargar llamado con fecha_inicio={fecha_inicio} y fecha_fin={fecha_fin}")
-    if fecha_inicio is not None and fecha_fin is not None:
-        fecha_inicio_dt = datetime.combine(fecha_inicio, time.min)
-        fecha_fin_dt = datetime.combine(fecha_fin, datetime.max.time())
-        xlms_stream = generar_reporte_alarmas_descarga(db.SessionLocal(), fecha_inicio_dt, fecha_fin_dt)
-        fecha_actual = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        nombreArchivo = f"informe_alarmas_{fecha_actual}.xlsx"
-
-        return StreamingResponse(
-            xlms_stream, 
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-            headers={"Content-Disposition": f"attachment; filename={nombreArchivo}"}
-        )
-    else:
-        return {"error": "Fechas no válidas. Asegúrese de proporcionar fecha_inicio y fecha_fin."}
+    try:
+        if opc_client.connected and opc_client.client:
+            root_node = opc_client.client.get_root_node()
+            root_node.get_browse_name()
+            estado_opc = "Conectado"
+        else:
+            estado_opc = "Desconectado"
+    except Exception as e:
+        estado_opc = "Desconectado"
+    
+    return {
+        "": "Hola Mundo- Levanto el server!", 
+        "Estado BDD": estado_bdd, 
+        "Estado OPC": estado_opc,
+        "Fecha actual": datetime.now().strftime("%d-%m-%Y %H-%M")
+    }

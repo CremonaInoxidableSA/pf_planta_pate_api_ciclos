@@ -91,9 +91,6 @@ def obtener_historico_alarmas(fecha_inicio, fecha_fin, session):
 
     return datos
 
- 
- 
-
 
 def generar_reporte_alarmas_descarga(session, fecha_inicio_dt, fecha_fin_dt):
     datos = obtener_historico_alarmas(fecha_inicio_dt, fecha_fin_dt, session)
