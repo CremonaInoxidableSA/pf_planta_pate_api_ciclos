@@ -69,12 +69,7 @@ def cargar_archivo_sql(file_path: str):
 
 
 async def central_opc_render():
-    """
-    Publica datos por WebSocket cada 1 s.
-    datosGenerales() solo lee el cache del handler — sin tráfico OPC.
-    Si el cache está vacío (post-caída), simplemente envía listas vacías
-    hasta que el monitor restaure la suscripción.
-    """
+    
     while True:
         try:
             datos = await dGeneral.datosGenerales()
@@ -191,7 +186,7 @@ def read_root():
         estado_opc = "Desconectado"
     
     return {
-        "": "Hola Mundo- Levanto el server!", 
+        "Hola Mundo-": " Levanto el server!", 
         "Estado BDD": estado_bdd, 
         "Estado OPC": estado_opc,
         "Fecha actual": datetime.now().strftime("%d-%m-%Y %H-%M")

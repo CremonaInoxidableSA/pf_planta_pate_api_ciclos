@@ -13,6 +13,6 @@ INSERT INTO sensores (id, nombre, tipo) VALUES
 (12, 'Bomba centrifuga accionamiento', 'SALIDA'), /*COCINA & ENFRIADOR*/
 (13, 'Vapor serpentina accionamiento', 'SALIDA'), /*COCINA & ENFRIADOR*/
 (14, 'Vapor vivo accionamiento', 'SALIDA'), /*COCINA & ENFRIADOR*/
-(15, 'Agua toma de filtro', 'SALIDA'), /*COCINA & ENFRIADOR*/
+(15, 'Filtro succion agua', 'SALIDA'), /*COCINA & ENFRIADOR*/
 (16, 'Carga de agua', 'SALIDA'), /*COCINA & ENFRIADOR*/
 (17, 'Tapa accionamiento', 'SALIDA'); /*COCINA & ENFRIADOR*/
