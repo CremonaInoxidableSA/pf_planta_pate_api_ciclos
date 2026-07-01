@@ -117,9 +117,13 @@ def descargar_archivo_xlms(
     equipo: str,
     db: Session = Depends(db.get_db)
 ):
-    xlms_stream = generar_informe_ciclo(db, id_ciclo, equipo)
     fecha_actual = datetime.now().strftime("%Y-%m-%d_%H-%M")
     nombreArchivo = f"informe_ciclo_{id_ciclo}_{fecha_actual}.xlsx"
+    try:
+        xlms_stream = generar_informe_ciclo(db, id_ciclo, equipo)
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
     return StreamingResponse(
         xlms_stream, 
