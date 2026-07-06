@@ -39,7 +39,7 @@ _TEMPLATE_INFORME_CICLO_PATH = (
 )
  
 _HOJA_DETALLE = "DETALLES CICLO"
-_HOJA_SENSORES = "SENSORES"
+_HOJA_SENSORES_A_QUITAR = "SENSORES"
  
 # Fila donde empieza el header de la tabla en la plantilla y donde
 # empiezan los datos (confirmado inspeccionando INFORME_CICLO.xlsx).
@@ -97,40 +97,9 @@ _SENALES_BOOLEANAS_ENFRIADOR = (
     ("vapor_limpieza", "VAPOR LIMPIEZA", ID_SENSOR_VAPOR_LIMPIEZA),
     ("amoniaco", "AMONIACO", ID_SENSOR_AMONIACO),
 )
-
-# Filtro real de SensoresIO según el tipo de equipo.
-# Coincide con las señales persistidas por opcClienteService.py.
-_IDS_SENSORES_IO_COCINA = (
-    6,   # Bomba centrifuga
-    13,  # Vapor serpentina accionamiento
-    14,  # Vapor vivo accionamiento
-    15,  # Filtro succion agua
-    16,  # Carga de agua
-)
-
-_IDS_SENSORES_IO_ENFRIADOR = (
-    6,   # Bomba centrifuga
-    8,   # Valvula amoniaco
-    10,  # Vapor vivo limpieza
-    15,  # Filtro succion agua
-    16,  # Carga de agua
-)
-
-_NOMBRES_SENSOR_FALLBACK = {
-    6: "BOMBA CENTRIFUGA",
-    8: "VALVULA AMONIACO",
-    10: "VAPOR VIVO LIMPIEZA",
-    13: "VAPOR SERPENTINA ACCIONAMIENTO",
-    14: "VAPOR VIVO ACCIONAMIENTO",
-    15: "FILTRO SUCCION AGUA",
-    16: "CARGA DE AGUA",
-}
-
-_RESUMEN_TITULO_ROW = 10
-_RESUMEN_HEADER_ROW = 11
  
 _HOJA_DETALLE = "DETALLES CICLO"
-_HOJA_SENSORES = "SENSORES"
+_HOJA_SENSORES_A_QUITAR = "SENSORES"
 _HEADER_ROW = 10
 _DATA_START_ROW = 11
 _TABLE_COLS = 10  # A..J
@@ -258,460 +227,6 @@ def _aplicar_estilo(celda_destino, estilo: dict):
     celda_destino.border = _copy.copy(estilo["border"])
     celda_destino.alignment = _copy.copy(estilo["alignment"])
     celda_destino.number_format = estilo["number_format"]
-
-
-def _segundos_a_hhmmss(total_segundos) -> str:
-    """Convierte segundos a HH:MM:SS sin limitar las horas a 24."""
-    try:
-        segundos = max(0, int(total_segundos or 0))
-    except (TypeError, ValueError):
-        segundos = 0
-    horas, resto = divmod(segundos, 3600)
-    minutos, segundos = divmod(resto, 60)
-    return f"{horas:02d}:{minutos:02d}:{segundos:02d}"
-
-
-def _recortar_intervalo(inicio, fin, limite_inicio=None, limite_fin=None):
-    """Recorta un intervalo al rango oficial del ciclo."""
-    if inicio is None:
-        return None
-
-    fin_efectivo = fin if fin is not None else limite_fin
-    if fin_efectivo is None:
-        return None
-
-    inicio_efectivo = inicio
-    if limite_inicio is not None and inicio_efectivo < limite_inicio:
-        inicio_efectivo = limite_inicio
-    if limite_fin is not None and fin_efectivo > limite_fin:
-        fin_efectivo = limite_fin
-
-    if fin_efectivo <= inicio_efectivo:
-        return None
-    return inicio_efectivo, fin_efectivo
-
-
-def _obtener_limites_reporte(ciclo, registros_io: list, estados_ciclo: list):
-    """
-    Prioriza las fechas de Ciclo. Si alguna falta, usa las marcas de
-    SensoresIO y EstadoCiclo disponibles para ese mismo ciclo.
-    """
-    inicios = []
-    finales = []
-
-    for registro in registros_io:
-        if registro.fechaInicio is not None:
-            inicios.append(registro.fechaInicio)
-        if registro.fechaFin is not None:
-            finales.append(registro.fechaFin)
-
-    for registro in estados_ciclo:
-        if registro.fechaInicio is not None:
-            inicios.append(registro.fechaInicio)
-        if registro.fechaFin is not None:
-            finales.append(registro.fechaFin)
-
-    inicio = ciclo.fecha_inicio or (min(inicios) if inicios else None)
-    fin = ciclo.fecha_fin or (max(finales) if finales else None)
-    return inicio, fin
-
-
-def _calcular_tiempos_sensor_io(registros: list, inicio_ciclo, fin_ciclo) -> dict:
-    """
-    Suma ACTIVO, INACTIVO e INDETERMINADO para un sensor.
-
-    INDETERMINADO es el tiempo del ciclo que no está cubierto por ningún
-    registro de SensoresIO. Ante solapamientos prevalece el intervalo que
-    comenzó más recientemente.
-    """
-    totales = {"ACTIVO": 0, "INACTIVO": 0, "INDETERMINADO": 0}
-    intervalos = []
-
-    for registro in registros:
-        recortado = _recortar_intervalo(
-            registro.fechaInicio,
-            registro.fechaFin,
-            inicio_ciclo,
-            fin_ciclo,
-        )
-        if recortado is None:
-            continue
-        inicio, fin = recortado
-        intervalos.append((
-            inicio,
-            fin,
-            bool(registro.valor),
-            int(getattr(registro, "id", 0) or 0),
-        ))
-
-    if inicio_ciclo is None or fin_ciclo is None or fin_ciclo <= inicio_ciclo:
-        for inicio, fin, valor, _ in intervalos:
-            estado = "ACTIVO" if valor else "INACTIVO"
-            totales[estado] += max(0, int((fin - inicio).total_seconds()))
-        return totales
-
-    limites = {inicio_ciclo, fin_ciclo}
-    for inicio, fin, _, _ in intervalos:
-        limites.add(inicio)
-        limites.add(fin)
-
-    puntos = sorted(limites)
-    for indice in range(len(puntos) - 1):
-        inicio_segmento = puntos[indice]
-        fin_segmento = puntos[indice + 1]
-        segundos = max(0, int((fin_segmento - inicio_segmento).total_seconds()))
-        if segundos == 0:
-            continue
-
-        vigentes = [
-            intervalo
-            for intervalo in intervalos
-            if intervalo[0] <= inicio_segmento < intervalo[1]
-        ]
-        if not vigentes:
-            totales["INDETERMINADO"] += segundos
-            continue
-
-        _, _, valor, _ = max(vigentes, key=lambda item: (item[0], item[3]))
-        totales["ACTIVO" if valor else "INACTIVO"] += segundos
-
-    return totales
-
-
-def _preparar_datos_hoja_sensores(
-    ciclo,
-    estados_ciclo: list,
-    registros_io: list,
-    nombres_sensores: dict,
-    ids_sensores_ordenados: tuple,
-):
-    """
-    Construye el resumen agrupado y la trazabilidad histórica de la hoja
-    SENSORES para un ciclo y un tipo de equipo determinados.
-    """
-    inicio_ciclo, fin_ciclo = _obtener_limites_reporte(
-        ciclo,
-        registros_io,
-        estados_ciclo,
-    )
-
-    registros_por_sensor = defaultdict(list)
-    for registro in registros_io:
-        registros_por_sensor[registro.idSensor].append(registro)
-
-    filas_resumen = []
-
-    # SensoresIO: tres filas por cada sensor configurado para el tipo
-    # de equipo. Si no posee registros, todo el ciclo queda reflejado
-    # como INDETERMINADO.
-    for id_sensor in ids_sensores_ordenados:
-        registros = registros_por_sensor.get(id_sensor, [])
-
-        nombre = nombres_sensores.get(
-            id_sensor,
-            _NOMBRES_SENSOR_FALLBACK.get(id_sensor, f"SENSOR {id_sensor}"),
-        )
-        totales = _calcular_tiempos_sensor_io(
-            registros,
-            inicio_ciclo,
-            fin_ciclo,
-        )
-        for estado in ("ACTIVO", "INACTIVO", "INDETERMINADO"):
-            filas_resumen.append([
-                nombre,
-                estado,
-                _segundos_a_hhmmss(totales[estado]),
-            ])
-
-    # EstadoCiclo: suma todos los tramos con el mismo nombre.
-    tiempos_estado_equipo = {}
-    for registro in estados_ciclo:
-        recortado = _recortar_intervalo(
-            registro.fechaInicio,
-            registro.fechaFin,
-            inicio_ciclo,
-            fin_ciclo,
-        )
-        if recortado is None:
-            continue
-
-        inicio, fin = recortado
-        nombre_estado = str(registro.nombre or "INDETERMINADO").strip().upper()
-        segundos = max(0, int((fin - inicio).total_seconds()))
-        tiempos_estado_equipo[nombre_estado] = (
-            tiempos_estado_equipo.get(nombre_estado, 0) + segundos
-        )
-
-    for estado, segundos in tiempos_estado_equipo.items():
-        filas_resumen.append([
-            "ESTADO EQUIPO",
-            estado,
-            _segundos_a_hhmmss(segundos),
-        ])
-
-    # Trazabilidad: registros reales de SensoresIO y EstadoCiclo.
-    filas_ordenadas = []
-
-    for registro in registros_io:
-        recortado = _recortar_intervalo(
-            registro.fechaInicio,
-            registro.fechaFin,
-            inicio_ciclo,
-            fin_ciclo,
-        )
-        if recortado is None:
-            continue
-
-        inicio, fin = recortado
-        nombre = nombres_sensores.get(
-            registro.idSensor,
-            _NOMBRES_SENSOR_FALLBACK.get(
-                registro.idSensor,
-                f"SENSOR {registro.idSensor}",
-            ),
-        )
-        fila = [
-            nombre,
-            _booleano_a_texto(registro.valor),
-            inicio,
-            fin,
-            _segundos_a_hhmmss((fin - inicio).total_seconds()),
-        ]
-        filas_ordenadas.append((inicio, nombre, fila))
-
-    for registro in estados_ciclo:
-        recortado = _recortar_intervalo(
-            registro.fechaInicio,
-            registro.fechaFin,
-            inicio_ciclo,
-            fin_ciclo,
-        )
-        if recortado is None:
-            continue
-
-        inicio, fin = recortado
-        fila = [
-            "ESTADO EQUIPO",
-            str(registro.nombre or "INDETERMINADO").strip().upper(),
-            inicio,
-            fin,
-            _segundos_a_hhmmss((fin - inicio).total_seconds()),
-        ]
-        filas_ordenadas.append((inicio, "ESTADO EQUIPO", fila))
-
-    filas_ordenadas.sort(key=lambda item: (item[0], item[1]))
-    filas_trazabilidad = [item[2] for item in filas_ordenadas]
-
-    return filas_resumen, filas_trazabilidad
-
-
-def _copiar_encabezado_detalle(ws_detalle, ws_sensores):
-    """Copia A1:J8 desde DETALLES CICLO hacia SENSORES."""
-    if "A1:J1" not in {str(rango) for rango in ws_sensores.merged_cells.ranges}:
-        ws_sensores.merge_cells("A1:J1")
-
-    for fila in range(1, 9):
-        for columna in range(1, 11):
-            # A1:J1 está combinado. Solo A1 es una celda editable;
-            # las demás son MergedCell de solo lectura.
-            if fila == 1 and columna > 1:
-                continue
-
-            origen = ws_detalle.cell(row=fila, column=columna)
-            destino = ws_sensores.cell(row=fila, column=columna)
-            destino.value = origen.value
-            if origen.has_style:
-                destino._style = _copy.copy(origen._style)
-            destino.number_format = origen.number_format
-            destino.alignment = _copy.copy(origen.alignment)
-
-        if ws_detalle.row_dimensions[fila].height is not None:
-            ws_sensores.row_dimensions[fila].height = (
-                ws_detalle.row_dimensions[fila].height
-            )
-
-
-def _generar_hoja_sensores(
-    wb,
-    ws_detalle,
-    filas_resumen: list,
-    filas_trazabilidad: list,
-):
-    """
-    Regenera SENSORES manteniendo el encabezado y crea dos tablas con
-    autofiltro: ResumenDatosCiclo y TrazabilidadHistoricaCiclo.
-    """
-    if _HOJA_SENSORES in wb.sheetnames:
-        ws_sensores = wb[_HOJA_SENSORES]
-    else:
-        ws_sensores = wb.create_sheet(_HOJA_SENSORES)
-
-    _copiar_encabezado_detalle(ws_detalle, ws_sensores)
-
-    for nombre_tabla in list(ws_sensores.tables.keys()):
-        del ws_sensores.tables[nombre_tabla]
-
-    for rango in list(ws_sensores.merged_cells.ranges):
-        if rango.min_row >= _RESUMEN_TITULO_ROW:
-            ws_sensores.unmerge_cells(str(rango))
-
-    if ws_sensores.max_row >= _RESUMEN_TITULO_ROW:
-        ws_sensores.delete_rows(
-            _RESUMEN_TITULO_ROW,
-            ws_sensores.max_row - _RESUMEN_TITULO_ROW + 1,
-        )
-
-    relleno_titulo = PatternFill(
-        start_color="145F82",
-        end_color="145F82",
-        fill_type="solid",
-    )
-    fuente_titulo = Font(color="FFFFFF", bold=True, size=12)
-    alineacion_centro = Alignment(horizontal="center", vertical="center")
-
-    # Resumen de datos.
-    ws_sensores.merge_cells(
-        start_row=_RESUMEN_TITULO_ROW,
-        start_column=1,
-        end_row=_RESUMEN_TITULO_ROW,
-        end_column=3,
-    )
-    celda_titulo = ws_sensores.cell(
-        row=_RESUMEN_TITULO_ROW,
-        column=1,
-        value="RESUMEN DE DATOS",
-    )
-    celda_titulo.fill = relleno_titulo
-    celda_titulo.font = fuente_titulo
-    celda_titulo.alignment = alineacion_centro
-
-    encabezados_resumen = [
-        "SENSOR",
-        "ESTADO",
-        "TIEMPO TOTAL [HH:MM:SS]",
-    ]
-    for columna, encabezado in enumerate(encabezados_resumen, start=1):
-        celda = ws_sensores.cell(
-            row=_RESUMEN_HEADER_ROW,
-            column=columna,
-            value=encabezado,
-        )
-        celda.font = Font(bold=True)
-        celda.alignment = alineacion_centro
-
-    if not filas_resumen:
-        filas_resumen = [["SIN DATOS", "INDETERMINADO", "00:00:00"]]
-
-    resumen_data_start = _RESUMEN_HEADER_ROW + 1
-    for indice, fila in enumerate(filas_resumen):
-        row_num = resumen_data_start + indice
-        for columna, valor in enumerate(fila, start=1):
-            celda = ws_sensores.cell(row=row_num, column=columna, value=valor)
-            if columna == 3:
-                celda.alignment = alineacion_centro
-
-    resumen_last_row = resumen_data_start + len(filas_resumen) - 1
-    tabla_resumen = Table(
-        displayName="ResumenDatosCiclo",
-        ref=f"A{_RESUMEN_HEADER_ROW}:C{resumen_last_row}",
-    )
-    tabla_resumen.tableStyleInfo = TableStyleInfo(
-        name="TableStyleMedium2",
-        showFirstColumn=False,
-        showLastColumn=False,
-        showRowStripes=True,
-        showColumnStripes=False,
-    )
-    ws_sensores.add_table(tabla_resumen)
-
-    # Trazabilidad histórica.
-    titulo_trazabilidad_row = resumen_last_row + 2
-    header_trazabilidad_row = titulo_trazabilidad_row + 1
-    data_trazabilidad_start = header_trazabilidad_row + 1
-
-    ws_sensores.merge_cells(
-        start_row=titulo_trazabilidad_row,
-        start_column=1,
-        end_row=titulo_trazabilidad_row,
-        end_column=5,
-    )
-    celda_trazabilidad = ws_sensores.cell(
-        row=titulo_trazabilidad_row,
-        column=1,
-        value="TRAZABILIDAD HISTORICA",
-    )
-    celda_trazabilidad.fill = relleno_titulo
-    celda_trazabilidad.font = fuente_titulo
-    celda_trazabilidad.alignment = alineacion_centro
-
-    encabezados_trazabilidad = [
-        "SENSOR",
-        "ESTADO",
-        "INICIO",
-        "FIN",
-        "TIEMPO TRANSCURRIDO [HH:MM:SS]",
-    ]
-    for columna, encabezado in enumerate(encabezados_trazabilidad, start=1):
-        celda = ws_sensores.cell(
-            row=header_trazabilidad_row,
-            column=columna,
-            value=encabezado,
-        )
-        celda.font = Font(bold=True)
-        celda.alignment = alineacion_centro
-
-    if not filas_trazabilidad:
-        filas_trazabilidad = [[
-            "SIN DATOS",
-            "INDETERMINADO",
-            None,
-            None,
-            "00:00:00",
-        ]]
-
-    formato_fecha = "yyyy-mm-dd hh:mm:ss"
-    for indice, fila in enumerate(filas_trazabilidad):
-        row_num = data_trazabilidad_start + indice
-        for columna, valor in enumerate(fila, start=1):
-            celda = ws_sensores.cell(row=row_num, column=columna, value=valor)
-            if columna in (3, 4) and isinstance(valor, datetime):
-                celda.number_format = formato_fecha
-            if columna in (2, 5):
-                celda.alignment = alineacion_centro
-
-    trazabilidad_last_row = (
-        data_trazabilidad_start + len(filas_trazabilidad) - 1
-    )
-    tabla_trazabilidad = Table(
-        displayName="TrazabilidadHistoricaCiclo",
-        ref=f"A{header_trazabilidad_row}:E{trazabilidad_last_row}",
-    )
-    tabla_trazabilidad.tableStyleInfo = TableStyleInfo(
-        name="TableStyleMedium2",
-        showFirstColumn=False,
-        showLastColumn=False,
-        showRowStripes=True,
-        showColumnStripes=False,
-    )
-    ws_sensores.add_table(tabla_trazabilidad)
-
-    for columna, ancho in {
-        "A": 34,
-        "B": 22,
-        "C": 25,
-        "D": 21,
-        "E": 38,
-    }.items():
-        ws_sensores.column_dimensions[columna].width = ancho
-
-    ws_sensores.freeze_panes = "A12"
-    ws_sensores.sheet_view.showGridLines = False
-
-    logger.info(
-        f"[generar_informe_ciclo] Hoja SENSORES generada: "
-        f"{len(filas_resumen)} filas de resumen y "
-        f"{len(filas_trazabilidad)} filas de trazabilidad."
-    )
  
  
 # ============================================================
@@ -758,13 +273,7 @@ def generar_informe_ciclo(db, id_ciclo: int, equipo: str):
  
     # Selección local por request. No se reasignan constantes globales,
     # evitando UnboundLocalError y cruces de configuración entre equipos.
-    # El tipo se obtiene del Equipo asociado al Ciclo. El parámetro se usa
-    # únicamente como respaldo cuando la relación no está disponible.
-    nombre_para_tipo = (
-        nombre_equipo
-        if maquina is not None
-        else str(equipo or "")
-    ).lower()
+    nombre_para_tipo = f"{nombre_equipo} {equipo or ''}".lower()
     es_enfriador = "enfriador" in nombre_para_tipo
     senales_booleanas = (
         _SENALES_BOOLEANAS_ENFRIADOR
@@ -958,50 +467,16 @@ def generar_informe_ciclo(db, id_ciclo: int, equipo: str):
         f"[generar_informe_ciclo] Última fila generada: fecha={filas[-1][0]} "
         f"estado={filas[-1][1]} temp_agua={filas[-1][7]}"
     )
-
-    # ---------- 9. Datos para la hoja SENSORES ----------
-    ids_sensores_io_tipo = (
-        _IDS_SENSORES_IO_ENFRIADOR
-        if es_enfriador
-        else _IDS_SENSORES_IO_COCINA
-    )
-
-    registros_io_sensores = (
-        db.query(SensoresIO)
-        .filter(
-            SensoresIO.idCiclo == ciclo.id,
-            SensoresIO.idSensor.in_(ids_sensores_io_tipo),
-        )
-        .order_by(SensoresIO.fechaInicio, SensoresIO.idSensor)
-        .all()
-    )
-
-    sensores_catalogo = (
-        db.query(Sensores)
-        .filter(Sensores.id.in_(ids_sensores_io_tipo))
-        .all()
-    )
-    nombres_sensores = {
-        sensor.id: str(sensor.nombre or f"SENSOR {sensor.id}").strip().upper()
-        for sensor in sensores_catalogo
-    }
-
-    filas_resumen_sensores, filas_trazabilidad_sensores = (
-        _preparar_datos_hoja_sensores(
-            ciclo=ciclo,
-            estados_ciclo=estados_ciclo,
-            registros_io=registros_io_sensores,
-            nombres_sensores=nombres_sensores,
-            ids_sensores_ordenados=ids_sensores_io_tipo,
-        )
-    )
  
-    # ---------- 10. Construcción del Excel a partir de la plantilla ----------
+    # ---------- 9. Construcción del Excel a partir de la plantilla ----------
     if not _TEMPLATE_INFORME_CICLO_PATH.exists():
         logger.error(f"[generar_informe_ciclo] Plantilla no encontrada en {_TEMPLATE_INFORME_CICLO_PATH}")
         raise FileNotFoundError(f"No se encontró la plantilla en {_TEMPLATE_INFORME_CICLO_PATH}")
  
     wb = load_workbook(_TEMPLATE_INFORME_CICLO_PATH)
+ 
+    if _HOJA_SENSORES_A_QUITAR in wb.sheetnames:
+        del wb[_HOJA_SENSORES_A_QUITAR]
  
     ws = wb[_HOJA_DETALLE]
  
@@ -1064,13 +539,6 @@ def generar_informe_ciclo(db, id_ciclo: int, equipo: str):
         ws.add_table(nueva_tabla)
  
     logger.info(f"[generar_informe_ciclo] Tabla Excel actualizada a rango A{_HEADER_ROW}:J{last_row}")
-
-    _generar_hoja_sensores(
-        wb=wb,
-        ws_detalle=ws,
-        filas_resumen=filas_resumen_sensores,
-        filas_trazabilidad=filas_trazabilidad_sensores,
-    )
  
     excel_stream = BytesIO()
     wb.save(excel_stream)
@@ -1567,5 +1035,6 @@ def obtener_datos_graficos(db, id_ciclo:int):
     lista_sensores_data["general"] = general
 
     return lista_sensores_data
+
 
 

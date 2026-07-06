@@ -1569,3 +1569,4 @@ def obtener_datos_graficos(db, id_ciclo:int):
     return lista_sensores_data
 
 
+

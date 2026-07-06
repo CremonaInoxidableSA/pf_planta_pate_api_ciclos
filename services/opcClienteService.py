@@ -62,15 +62,19 @@ IO_SENSOR_MAP_COCINA: dict[str, int] = {
     "CARGA_AGUA":           16,
     "BOMBA_CENTRIFUGA":     6,
     "VAPOR_SERPENTINA_ACC": 13,
+    "VAPOR_SERPENTINA":     7,
     "VAPOR_VIVO_ACC":       14,
+    "VAPOR_VIVO":           9
 }
 
 IO_SENSOR_MAP_ENFRIADOR: dict[str, int] = {
     "FILTRO_SUCCION_AGUA": 15,
     "CARGA_AGUA":          16,
     "BOMBA_CENTRIFUGA":    6,
-    "AMONIACO_ACC":        8,
-    "VAPOR_LIMPIEZA_ACC":  10,
+    "AMONIACO_ACC":        19,
+    "VAPOR_LIMPIEZA_ACC":  18,
+    "VAPOR_LIMPIEZA":      10,
+    "AMONIACO":            8
 }
 
 # Mapeo campo JSON --> id sensor analógico (SensoresAA)

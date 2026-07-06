@@ -15,4 +15,6 @@ INSERT INTO sensores (id, nombre, tipo) VALUES
 (14, 'Vapor vivo accionamiento', 'SALIDA'), /*COCINA & ENFRIADOR*/
 (15, 'Filtro succion agua', 'SALIDA'), /*COCINA & ENFRIADOR*/
 (16, 'Carga de agua', 'SALIDA'), /*COCINA & ENFRIADOR*/
-(17, 'Tapa accionamiento', 'SALIDA'); /*COCINA & ENFRIADOR*/
+(17, 'Tapa accionamiento', 'SALIDA'), /*COCINA & ENFRIADOR*/
+(18, 'Vapor vivo limpieza accionamiento', 'SALIDA'), /*ENFRIADOR | OPCIONAL PF*/
+(19, 'Valvula amoniaco accionamiento', 'SALIDA'); /*ENFRIADOR*/

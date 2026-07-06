@@ -713,8 +713,8 @@ def main():
             #for nodes, sim_state in zip(cocina_l2_nodes, cocina_states[3:]):
             #    update_cocina(nodes, sim_state)
 
-            #for nodes, sim_state in zip(enfriador_l2_nodes, enfriador_states[4:]):
-            #    update_enfriador(nodes, sim_state)
+            for nodes, sim_state in zip(enfriador_l2_nodes, enfriador_states[4:]):
+                update_enfriador(nodes, sim_state)
 
             time.sleep(1)
 
