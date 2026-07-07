@@ -15,7 +15,13 @@ from models.sensoresIO import SensoresIO
  
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image
-from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.styles import (
+    Font,
+    Alignment,
+    PatternFill,
+    Border,
+    Side,
+)
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from io import BytesIO
  
@@ -385,46 +391,68 @@ def _preparar_datos_hoja_sensores(
     nombres_sensores: dict,
     ids_sensores_ordenados: tuple,
 ):
-    """
-    Construye el resumen agrupado y la trazabilidad histórica de la hoja
-    SENSORES para un ciclo y un tipo de equipo determinados.
-    """
+
     inicio_ciclo, fin_ciclo = _obtener_limites_reporte(
         ciclo,
         registros_io,
         estados_ciclo,
     )
 
+    # Agrupar los registros encontrados por idSensor.
     registros_por_sensor = defaultdict(list)
+
     for registro in registros_io:
         registros_por_sensor[registro.idSensor].append(registro)
 
     filas_resumen = []
 
-    # SensoresIO: tres filas por cada sensor configurado para el tipo
-    # de equipo. Si no posee registros, todo el ciclo queda reflejado
-    # como INDETERMINADO.
+    # ============================================================
+    # RESUMEN DE SENSORES IO
+    # ============================================================
     for id_sensor in ids_sensores_ordenados:
+
         registros = registros_por_sensor.get(id_sensor, [])
+
+        # Si este sensor no tiene ningún registro en SensoresIO
+        # para el ciclo actual, no se agrega al resumen.
+        if not registros:
+            logger.debug(
+                f"[generar_informe_ciclo] Sensor id={id_sensor} "
+                f"sin registros en SensoresIO para ciclo={ciclo.id}. "
+                f"Se omite del resumen."
+            )
+            continue
 
         nombre = nombres_sensores.get(
             id_sensor,
-            _NOMBRES_SENSOR_FALLBACK.get(id_sensor, f"SENSOR {id_sensor}"),
+            _NOMBRES_SENSOR_FALLBACK.get(
+                id_sensor,
+                f"SENSOR {id_sensor}",
+            ),
         )
+
         totales = _calcular_tiempos_sensor_io(
             registros,
             inicio_ciclo,
             fin_ciclo,
         )
-        for estado in ("ACTIVO", "INACTIVO", "INDETERMINADO"):
+
+        for estado in (
+            "ACTIVO",
+            "INACTIVO",
+            "INDETERMINADO",
+        ):
             filas_resumen.append([
                 nombre,
                 estado,
                 _segundos_a_hhmmss(totales[estado]),
             ])
 
-    # EstadoCiclo: suma todos los tramos con el mismo nombre.
+    # ============================================================
+    # RESUMEN DE ESTADOS DEL EQUIPO
+    # ============================================================
     tiempos_estado_equipo = {}
+
     for registro in estados_ciclo:
         recortado = _recortar_intervalo(
             registro.fechaInicio,
@@ -432,14 +460,24 @@ def _preparar_datos_hoja_sensores(
             inicio_ciclo,
             fin_ciclo,
         )
+
         if recortado is None:
             continue
 
         inicio, fin = recortado
-        nombre_estado = str(registro.nombre or "INDETERMINADO").strip().upper()
-        segundos = max(0, int((fin - inicio).total_seconds()))
+
+        nombre_estado = str(
+            registro.nombre or "INDETERMINADO"
+        ).strip().upper()
+
+        segundos = max(
+            0,
+            int((fin - inicio).total_seconds()),
+        )
+
         tiempos_estado_equipo[nombre_estado] = (
-            tiempos_estado_equipo.get(nombre_estado, 0) + segundos
+            tiempos_estado_equipo.get(nombre_estado, 0)
+            + segundos
         )
 
     for estado, segundos in tiempos_estado_equipo.items():
@@ -449,9 +487,13 @@ def _preparar_datos_hoja_sensores(
             _segundos_a_hhmmss(segundos),
         ])
 
-    # Trazabilidad: registros reales de SensoresIO y EstadoCiclo.
+    # ============================================================
+    # TRAZABILIDAD HISTÓRICA
+    # ============================================================
     filas_ordenadas = []
 
+    # SensoresIO:
+    # esta sección ya trabaja únicamente con registros reales de BDD.
     for registro in registros_io:
         recortado = _recortar_intervalo(
             registro.fechaInicio,
@@ -459,10 +501,12 @@ def _preparar_datos_hoja_sensores(
             inicio_ciclo,
             fin_ciclo,
         )
+
         if recortado is None:
             continue
 
         inicio, fin = recortado
+
         nombre = nombres_sensores.get(
             registro.idSensor,
             _NOMBRES_SENSOR_FALLBACK.get(
@@ -470,15 +514,22 @@ def _preparar_datos_hoja_sensores(
                 f"SENSOR {registro.idSensor}",
             ),
         )
+
         fila = [
             nombre,
             _booleano_a_texto(registro.valor),
             inicio,
             fin,
-            _segundos_a_hhmmss((fin - inicio).total_seconds()),
+            _segundos_a_hhmmss(
+                (fin - inicio).total_seconds()
+            ),
         ]
-        filas_ordenadas.append((inicio, nombre, fila))
 
+        filas_ordenadas.append(
+            (inicio, nombre, fila)
+        )
+
+    # EstadoCiclo.
     for registro in estados_ciclo:
         recortado = _recortar_intervalo(
             registro.fechaInicio,
@@ -486,24 +537,41 @@ def _preparar_datos_hoja_sensores(
             inicio_ciclo,
             fin_ciclo,
         )
+
         if recortado is None:
             continue
 
         inicio, fin = recortado
+
         fila = [
             "ESTADO EQUIPO",
-            str(registro.nombre or "INDETERMINADO").strip().upper(),
+            str(
+                registro.nombre or "INDETERMINADO"
+            ).strip().upper(),
             inicio,
             fin,
-            _segundos_a_hhmmss((fin - inicio).total_seconds()),
+            _segundos_a_hhmmss(
+                (fin - inicio).total_seconds()
+            ),
         ]
-        filas_ordenadas.append((inicio, "ESTADO EQUIPO", fila))
 
-    filas_ordenadas.sort(key=lambda item: (item[0], item[1]))
-    filas_trazabilidad = [item[2] for item in filas_ordenadas]
+        filas_ordenadas.append(
+            (inicio, "ESTADO EQUIPO", fila)
+        )
+
+    filas_ordenadas.sort(
+        key=lambda item: (
+            item[0],
+            item[1],
+        )
+    )
+
+    filas_trazabilidad = [
+        item[2]
+        for item in filas_ordenadas
+    ]
 
     return filas_resumen, filas_trazabilidad
-
 
 def _copiar_encabezado_detalle(ws_detalle, ws_sensores):
     """Copia A1:J8 desde DETALLES CICLO hacia SENSORES."""
@@ -562,9 +630,9 @@ def _generar_hoja_sensores(
         )
 
     relleno_titulo = PatternFill(
-        start_color="145F82",
-        end_color="145F82",
         fill_type="solid",
+        start_color="5B9BD5",
+        end_color="5B9BD5",
     )
     fuente_titulo = Font(color="FFFFFF", bold=True, size=12)
     alineacion_centro = Alignment(horizontal="center", vertical="center")
@@ -596,7 +664,12 @@ def _generar_hoja_sensores(
             column=columna,
             value=encabezado,
         )
-        celda.font = Font(bold=True)
+        celda.font = Font(
+            name="Calibri",
+            size=11,
+            bold=True,
+            color="FFFFFF",
+        )
         celda.alignment = alineacion_centro
 
     if not filas_resumen:
@@ -619,7 +692,6 @@ def _generar_hoja_sensores(
         name="TableStyleMedium2",
         showFirstColumn=False,
         showLastColumn=False,
-        showRowStripes=True,
         showColumnStripes=False,
     )
     ws_sensores.add_table(tabla_resumen)
@@ -657,7 +729,12 @@ def _generar_hoja_sensores(
             column=columna,
             value=encabezado,
         )
-        celda.font = Font(bold=True)
+        celda.font = Font(
+            name="Calibri",
+            size=11,
+            bold=True,
+            color="FFFFFF",
+        )
         celda.alignment = alineacion_centro
 
     if not filas_trazabilidad:
@@ -704,8 +781,8 @@ def _generar_hoja_sensores(
     }.items():
         ws_sensores.column_dimensions[columna].width = ancho
 
-    ws_sensores.freeze_panes = "A12"
-    ws_sensores.sheet_view.showGridLines = False
+
+    ws_sensores.sheet_view.showGridLines = True
 
     logger.info(
         f"[generar_informe_ciclo] Hoja SENSORES generada: "
