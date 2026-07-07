@@ -19,15 +19,12 @@ from openpyxl.styles import (
     Font,
     Alignment,
     PatternFill,
-    Border,
-    Side,
 )
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from io import BytesIO
  
 from pathlib import Path
 import copy as _copy
-import unicodedata
 import logging
  
 logger = logging.getLogger("uvicorn")
@@ -1311,148 +1308,7 @@ def _update_table(ws, new_last_row: int):
     new_tbl.tableStyleInfo = style
     ws.add_table(new_tbl)
 
-def generar_reporte_productividad(id_equipo, fecha_inicio, fecha_fin, db):
-    fecha_inicio = datetime.combine(fecha_inicio, datetime.min.time())
-    fecha_fin = datetime.combine(fecha_fin, datetime.max.time())
-    lista_ciclos: list[Ciclo] = [] 
-    #linea1 = [7,8,9,10]
-    #linea2 = [11,12,13,14]
-    linea1 = [1,2,3]
-    linea2 = [4,5,6]
 
-    nombre_maquina = ""
-    def buscarReceta(id_receta):
-        receta = (
-            db.query(Receta)
-            .filter(id_receta == Receta.id)
-            .first()
-        )
-        return receta.nombre
-    
-    def bucarNombreEquipo(id_maquina):
-        maquina = (db.query(Equipo).filter(id_maquina == Equipo.id).first())
-        return maquina.nombre
-
-    if id_equipo == 15:
-        lista_ciclos= (
-            db.query(Ciclo)
-            .filter(Ciclo.idEquipo.in_(linea1))
-            .filter(Ciclo.fecha_fin.between(fecha_inicio, fecha_fin))
-            .all()
-        )
-        nombre_maquina = "Linea 1"
-    if id_equipo == 16:
-        lista_ciclos= (
-            db.query(Ciclo)
-            .filter(Ciclo.idEquipo.in_(linea2))
-            .filter(Ciclo.fecha_fin.between(fecha_inicio, fecha_fin))
-            .all()
-        )
-        nombre_maquina = "Linea 2"
-    if id_equipo <= 14 and id_equipo != 0:
-        lista_ciclos = (
-            db.query(Ciclo)
-            .filter(Ciclo.fecha_fin.between(fecha_inicio, fecha_fin))
-            .filter(Ciclo.idEquipo == id_equipo)
-            .all()
-        )
-        nombre_maquina = bucarNombreEquipo(id_equipo)
-    if id_equipo == 0:
-        lista_ciclos = (
-            db.query(Ciclo)
-            .filter(Ciclo.fecha_fin.between(fecha_inicio, fecha_fin))
-            .all()
-        )
-        nombre_maquina = "Completo"
-
-    #CONSTRUCCION DEL ARCHIVO XLMS
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Informe de productividad"
-    logoPath = "cremona.png"
-    img = Image(logoPath)
-    img.width = 280
-    img.height = 70
-    sheet.add_image(img, 'D1')
-
-    sheet.append(["Lista ciclos finalizados correctamente"])
-    producto_cell = sheet.cell(row=sheet.max_row, column=1)
-    producto_cell.font = Font(bold= True, size=20)
-
-    sheet.append(["Fecha Inicio:", fecha_inicio.strftime("%Y-%m-%d")])
-    fechaInicio_cell = sheet.cell(row=sheet.max_row, column=1)
-    fechaInicio_cell.font = Font(bold=True, size=12)
-    sheet.append(["Fecha Fin:", fecha_fin.strftime("%Y-%m-%d")])
-    fechaFin_cell = sheet.cell(row=sheet.max_row, column=1)
-    fechaFin_cell.font = Font(bold=True, size=12)
-
-    sheet.append([f"Buscar: {nombre_maquina}"])
-    producto_cell = sheet.cell(row=sheet.max_row, column=5)
-    producto_cell.font = Font(bold= True, size=16)
-
-    headers = ["ID_CICLO", "ESTADO_CICLO", "CANTIDAD_TORRE", "LOTE", "TIEMPO_TRANSCURRIDO", "FECHA_INICIO", "FECHA_FIN", "EQUIPO", "PESO","RECETA"]
-    sheet.append(headers)
-    header_fill = PatternFill(start_color="145f82", end_color="145f82", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True)  
-
-    for col in range(1, len(headers) + 1):
-        cell = sheet.cell(row=sheet.max_row, column=col)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center")
-    
-    start_row = sheet.max_row + 1
-
-    resultado_fila = []
-
-    for elem in lista_ciclos:
-        item_equipo = bucarNombreEquipo(elem.idEquipo)
-        item_receta = buscarReceta(elem.idReceta)
-        resultado_fila.append([
-            elem.id,
-            elem.estadoMaquina,
-            elem.cantidadTorres,
-            elem.lote,
-            elem.tiempoTranscurrido,
-            elem.fecha_inicio,
-            elem.fecha_fin,
-            item_equipo,
-            elem.peso,
-            item_receta
-        ])
-
-    for item in resultado_fila:
-        sheet.append(item)
-    
-    end_row = sheet.max_row
-    start_col = 1
-    end_col = len(headers)
-    table_range = f"{sheet.cell(row=start_row -1, column=start_col).coordinate}:{sheet.cell(row=end_row, column=end_col).coordinate}"
-    table_nombre = "GraficosHistorico"
-    tabla = Table(displayName=table_nombre, ref=table_range)
-    style = TableStyleInfo(showFirstColumn=False, showLastColumn=False, showRowStripes=True, showColumnStripes=True)
-    tabla.tableStyleInfo = style
-
-    # Agregar la tabla a la hoja
-    sheet.add_table(tabla)
-    sheet.append([])
-
-    for col in sheet.columns:
-        max_length = 0
-        column_letter = col[0].column_letter
-        for cell in col:
-            try:
-                max_length = max(max_length, len(str(cell.value)))
-            except:
-                pass
-        sheet.column_dimensions[column_letter].width = max_length + 2
-
-    excel_stream = BytesIO()
-    workbook.save(excel_stream)
-    workbook.close() 
-    excel_stream.seek(0)  
-
-    return excel_stream
 
 def productividad_equipo(db, fecha_inicio, fecha_fin, id_equipo):
     fecha_inicio = datetime.combine(fecha_inicio, datetime.min.time())
