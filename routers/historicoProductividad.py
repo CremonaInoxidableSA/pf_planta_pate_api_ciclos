@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 from datetime import datetime, date
 from config import db
 
-from services.historicoServices import productividad_equipo
-from services.generarReportes import generar_reporte_productividad
+from services.historicoServices import productividad_equipo, generar_reporte_productividad
+
 import logging
 
 logger = logging.getLogger("uvicorn")

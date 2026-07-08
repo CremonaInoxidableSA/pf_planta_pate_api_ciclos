@@ -1,3 +1,4 @@
+
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from bisect import bisect_right
@@ -19,12 +20,15 @@ from openpyxl.styles import (
     Font,
     Alignment,
     PatternFill,
+    Border,
+    Side,
 )
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from io import BytesIO
  
 from pathlib import Path
 import copy as _copy
+import unicodedata
 import logging
  
 logger = logging.getLogger("uvicorn")
@@ -1309,6 +1313,811 @@ def _update_table(ws, new_last_row: int):
     ws.add_table(new_tbl)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Ruta de la plantilla del informe de productividad
+# ─────────────────────────────────────────────────────────────────────────────
+_TEMPLATE_PRODUCTIVIDAD_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "data"
+    / "INFORME_DE_PRODUCTIVIDAD.xlsx"
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Distribución real de equipos (confirmada contra insert_equipos.sql)
+# IDs  1–3  → cocinas  L1      IDs  7–10 → enfriadores L1
+# IDs  4–6  → cocinas  L2      IDs 11–14 → enfriadores L2
+# ID 15 → selector "toda la L1"
+# ID 16 → selector "toda la L2"
+# ID  0 → todos los equipos
+# ─────────────────────────────────────────────────────────────────────────────
+_COCINAS_L1      = [1, 2, 3]
+_COCINAS_L2      = [4, 5, 6]
+_ENFRIADORES_L1  = [7, 8, 9, 10]
+_ENFRIADORES_L2  = [11, 12, 13, 14]
+_LINEA1          = _COCINAS_L1 + _ENFRIADORES_L1
+_LINEA2          = _COCINAS_L2 + _ENFRIADORES_L2
+
+
+IDS_COCINAS_L1 = {1, 2, 3}
+IDS_COCINAS_L2 = {4, 5, 6}
+IDS_ENFRIADORES_L1 = {7, 8, 9, 10}
+IDS_ENFRIADORES_L2 = {11, 12, 13, 14}
+
+IDS_COCINAS = IDS_COCINAS_L1 | IDS_COCINAS_L2
+IDS_ENFRIADORES = IDS_ENFRIADORES_L1 | IDS_ENFRIADORES_L2
+IDS_LINEA_1 = IDS_COCINAS_L1 | IDS_ENFRIADORES_L1
+IDS_LINEA_2 = IDS_COCINAS_L2 | IDS_ENFRIADORES_L2
+IDS_TODOS = IDS_LINEA_1 | IDS_LINEA_2
+
+    
+ESTADO_FINALIZADO = "FINALIZADO"
+ESTADO_CANCELADO = "CANCELADO"
+    
+ESTADOS_CANCELADOS = {"CANCELADO", "CANCELADOS"}
+
+IDS_TODOS = IDS_LINEA_1 | IDS_LINEA_2
+ESTADO_FINALIZADO = "FINALIZADO" 
+ESTADO_CANCELADO = "CANCELADO"
+ESTADOS_CANCELADOS = {"CANCELADO", "CANCELADOS"}
+
+
+def _segundos_a_excel(segundos: float) -> float:
+    """Convierte segundos a fracción de día (unidad nativa de Excel)."""
+    return segundos / 86400.0
+
+
+def _timedelta_a_excel(td) -> float:
+    """Convierte un timedelta a fracción de día para Excel."""
+    return td.total_seconds() / 86400.0
+
+
+def _capturar_estilo_fila(ws, fila: int, max_col: int) -> list[dict]:
+    """Devuelve una lista de dicts con el estilo de cada celda de la fila."""
+    estilos = []
+    for c in range(1, max_col + 1):
+        celda = ws.cell(row=fila, column=c)
+        estilos.append({
+            "font":         _copy.copy(celda.font),
+            "fill":         _copy.copy(celda.fill),
+            "border":       _copy.copy(celda.border),
+            "alignment":    _copy.copy(celda.alignment),
+            "number_format": celda.number_format,
+        })
+    return estilos
+
+
+def _aplicar_estilo_fila(ws, fila: int, estilos: list[dict]):
+    for c, est in enumerate(estilos, start=1):
+        celda = ws.cell(row=fila, column=c)
+        celda.font          = _copy.copy(est["font"])
+        celda.fill          = _copy.copy(est["fill"])
+        celda.border        = _copy.copy(est["border"])
+        celda.alignment     = _copy.copy(est["alignment"])
+        celda.number_format = est["number_format"]
+
+
+def _actualizar_tabla(ws, nombre_tabla: str, nuevo_ref: str):
+    """Reemplaza el rango de una tabla existente conservando su estilo."""
+    tobj = ws.tables[nombre_tabla]
+    estilo = tobj.tableStyleInfo
+    del ws.tables[nombre_tabla]
+    nueva = Table(displayName=nombre_tabla, ref=nuevo_ref)
+    nueva.tableStyleInfo = estilo
+    ws.add_table(nueva)
+
+
+def _linea_de_equipo(nombre: str) -> str:
+    """Infiere la línea ('L1' o 'L2') a partir del nombre del equipo."""
+    n = nombre.upper()
+    if "L2" in n:
+        return "L2"
+    if "L1" in n:
+        return "L1"
+    return ""
+
+
+def _es_cocina(nombre: str) -> bool:
+    return "COCINA" in nombre.upper()
+
+
+def _es_enfriador(nombre: str) -> bool:
+    return "ENFRIADOR" in nombre.upper()
+
+
+def _nombre_busqueda_display(id_equipo: int, equipos_por_id: dict) -> str:
+    """Genera el texto para la celda 'Buscar' del encabezado."""
+    if id_equipo == 0:
+        return "Todos los equipos"
+    if id_equipo == 15:
+        return "Todos los equipos - L1"
+    if id_equipo == 16:
+        return "Todos los equipos - L2"
+    nombre = equipos_por_id.get(id_equipo, f"Equipo {id_equipo}")
+    return nombre
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FUNCIÓN PRINCIPAL
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generar_reporte_productividad(id_equipo, fecha_inicio, fecha_fin, db):
+    """
+    Genera el INFORME DE PRODUCTIVIDAD en tres hojas:
+      - LISTA CICLOS: un ciclo por fila.
+      - LOTE:         un lote por fila (cocina + enfriador emparejados).
+      - PRODUCTIVIDAD: resumen por receta (solo lotes COMPLETO).
+
+    Parámetros
+    ----------
+    id_equipo   : 0=todos | 15=L1 | 16=L2 | 1–14=equipo puntual
+    fecha_inicio: date o datetime (inicio del período)
+    fecha_fin   : date o datetime (fin del período)
+    db          : sesión SQLAlchemy
+
+    Retorna BytesIO con el Excel listo para StreamingResponse.
+    """
+    # ── 1. Normalizar fechas ──────────────────────────────────────────────────
+    if isinstance(fecha_inicio, date) and not isinstance(fecha_inicio, datetime):
+        fecha_inicio = datetime.combine(fecha_inicio, datetime.min.time())
+    if isinstance(fecha_fin, date) and not isinstance(fecha_fin, datetime):
+        fecha_fin = datetime.combine(fecha_fin, datetime.max.time())
+
+    logger.info(
+        f"[generar_reporte_productividad] id_equipo={id_equipo} "
+        f"período=[{fecha_inicio} – {fecha_fin}]"
+    )
+
+    # ── 2. Determinar qué equipos consultar ───────────────────────────────────
+    # Para armar la hoja LOTE siempre necesitamos cocinas Y enfriadores de la
+    # misma línea, aunque se haya pedido un equipo puntual.
+    if id_equipo == 0:
+        ids_consulta = None          # sin filtro de equipo
+        ids_lote_cc  = _COCINAS_L1 + _COCINAS_L2
+        ids_lote_ef  = _ENFRIADORES_L1 + _ENFRIADORES_L2
+    elif id_equipo == 15:
+        ids_consulta = _LINEA1
+        ids_lote_cc  = _COCINAS_L1
+        ids_lote_ef  = _ENFRIADORES_L1
+    elif id_equipo == 16:
+        ids_consulta = _LINEA2
+        ids_lote_cc  = _COCINAS_L2
+        ids_lote_ef  = _ENFRIADORES_L2
+    elif id_equipo in _COCINAS_L1:
+        ids_consulta = [id_equipo]
+        ids_lote_cc  = _COCINAS_L1
+        ids_lote_ef  = _ENFRIADORES_L1
+    elif id_equipo in _COCINAS_L2:
+        ids_consulta = [id_equipo]
+        ids_lote_cc  = _COCINAS_L2
+        ids_lote_ef  = _ENFRIADORES_L2
+    elif id_equipo in _ENFRIADORES_L1:
+        ids_consulta = [id_equipo]
+        ids_lote_cc  = _COCINAS_L1
+        ids_lote_ef  = _ENFRIADORES_L1
+    elif id_equipo in _ENFRIADORES_L2:
+        ids_consulta = [id_equipo]
+        ids_lote_cc  = _COCINAS_L2
+        ids_lote_ef  = _ENFRIADORES_L2
+    else:
+        ids_consulta = None
+        ids_lote_cc  = _COCINAS_L1 + _COCINAS_L2
+        ids_lote_ef  = _ENFRIADORES_L1 + _ENFRIADORES_L2
+        logger.warning(
+            f"[generar_reporte_productividad] id_equipo={id_equipo} no reconocido; "
+            f"se consultarán todos los equipos."
+        )
+
+    # ── 3. Consultas agrupadas (sin N+1) ──────────────────────────────────────
+    q_base = (
+        db.query(Ciclo)
+        .filter(
+            Ciclo.fecha_inicio.isnot(None),
+            Ciclo.fecha_fin.isnot(None),
+            Ciclo.fecha_fin.between(fecha_inicio, fecha_fin),
+        )
+    )
+    if ids_consulta is not None:
+        # Para la hoja LOTE necesitamos también los ciclos complementarios del
+        # mismo período (cocina o enfriador) aunque no coincidan con el filtro
+        # de equipo elegido por el usuario.
+        ids_para_lote = list(set(ids_consulta + ids_lote_cc + ids_lote_ef))
+        ciclos_todos = (
+            db.query(Ciclo)
+            .filter(
+                Ciclo.fecha_inicio.isnot(None),
+                Ciclo.fecha_fin.isnot(None),
+                Ciclo.fecha_fin.between(fecha_inicio, fecha_fin),
+                Ciclo.idEquipo.in_(ids_para_lote),
+            )
+            .all()
+        )
+        ciclos_lista = [c for c in ciclos_todos if c.idEquipo in ids_consulta]
+    else:
+        ciclos_todos = q_base.all()
+        ciclos_lista = ciclos_todos
+
+    logger.info(
+        f"[generar_reporte_productividad] ciclos para LISTA={len(ciclos_lista)}, "
+        f"ciclos para emparejar LOTE={len(ciclos_todos)}"
+    )
+
+    if not ciclos_todos:
+        logger.warning(
+            "[generar_reporte_productividad] Sin datos en el período. "
+            "Se generará el Excel con las hojas vacías."
+        )
+
+    # ── 4. Catálogos en memoria (equipos y recetas) ───────────────────────────
+    ids_eq  = {c.idEquipo for c in ciclos_todos if c.idEquipo is not None}
+    ids_rec = {c.idReceta for c in ciclos_todos if c.idReceta is not None}
+
+    equipos  = db.query(Equipo).filter(Equipo.id.in_(ids_eq)).all()  if ids_eq  else []
+    recetas  = db.query(Receta).filter(Receta.id.in_(ids_rec)).all() if ids_rec else []
+
+    equipos_por_id = {e.id: e.nombre for e in equipos}
+    recetas_por_id = {r.id: r.nombre for r in recetas}
+
+    def _normalizar_estado(valor):
+        return str(valor or "N/A").strip().upper()
+
+    def _es_finalizado(estado):
+        return _normalizar_estado(estado) == ESTADO_FINALIZADO
+
+    def _es_cancelado(estado):
+        return _normalizar_estado(estado) in ESTADOS_CANCELADOS
+    
+
+    # ── 5. Armar filas de LISTA CICLOS ────────────────────────────────────────
+    # Columnas: ID CICLO | RECETA | EQUIPO | LINEA | LOTE | PESO | CANT TORRES
+    #           ESTADO | INICIO | FIN | TIEMPO
+    filas_lista = []
+
+    cantidad_finalizados = 0
+    cantidad_cancelados = 0
+
+    torres_finalizadas = 0
+    torres_canceladas = 0
+
+    peso_finalizado = 0.0
+    peso_cancelado = 0.0
+
+    for c in ciclos_lista:
+        nombre_eq = equipos_por_id.get(c.idEquipo, "") if c.idEquipo else ""
+        nombre_rec = recetas_por_id.get(c.idReceta, "") if c.idReceta else ""
+        linea = _linea_de_equipo(nombre_eq)
+
+        duracion = (
+            c.fecha_fin - c.fecha_inicio
+            if c.fecha_inicio and c.fecha_fin
+            else None
+        )
+
+        estado = _normalizar_estado(c.estadoMaquina)
+        torres = int(c.cantidadTorres or 0)
+        peso = float(c.peso or 0)
+
+        if _es_finalizado(estado):
+            cantidad_finalizados += 1
+            torres_finalizadas += torres
+            peso_finalizado += peso
+
+        elif _es_cancelado(estado):
+            cantidad_cancelados += 1
+            torres_canceladas += torres
+            peso_cancelado += peso
+
+        filas_lista.append([
+            c.id,
+            nombre_rec,
+            nombre_eq,
+            linea,
+            c.lote or "",
+            peso,
+            torres,
+            estado,
+            c.fecha_inicio,
+            c.fecha_fin,
+            _timedelta_a_excel(duracion) if duracion is not None else None,
+        ])
+    filas_lista.sort(key=lambda r: r[8] or datetime.min)
+    logger.info(f"[generar_reporte_productividad] LISTA CICLOS: {len(filas_lista)} filas")
+
+    # ── 6. Armar filas de LOTE ────────────────────────────────────────────────
+    # Emparejamiento: por código de lote, preferir misma línea;
+    # validar que inicio_enfriador >= fin_cocina.
+
+    ciclos_por_lote_cc = defaultdict(list)   # lote → lista de ciclos cocina
+    ciclos_por_lote_ef = defaultdict(list)   # lote → lista de ciclos enfriador
+
+    for c in ciclos_todos:
+        if c.lote is None:
+            continue
+        nombre_eq = equipos_por_id.get(c.idEquipo, "") if c.idEquipo else ""
+        if _es_cocina(nombre_eq) and c.idEquipo in ids_lote_cc:
+            ciclos_por_lote_cc[c.lote].append(c)
+        elif _es_enfriador(nombre_eq) and c.idEquipo in ids_lote_ef:
+            ciclos_por_lote_ef[c.lote].append(c)
+
+    todos_los_lotes = sorted(
+        set(ciclos_por_lote_cc.keys()) | set(ciclos_por_lote_ef.keys())
+    )
+
+    filas_lote = []
+
+    for lote in todos_los_lotes:
+        cc_list = ciclos_por_lote_cc.get(lote, [])
+        ef_list = ciclos_por_lote_ef.get(lote, [])
+
+        if not cc_list and not ef_list:
+            continue
+
+        if not cc_list:
+            # Sin cocina
+            ef = ef_list[0]
+            nombre_ef = equipos_por_id.get(ef.idEquipo, "")
+            nombre_rec = recetas_por_id.get(ef.idReceta, "") if ef.idReceta else ""
+            filas_lote.append([
+                lote, nombre_rec, "", nombre_ef,
+                None, ef.fecha_fin,
+                ef.cantidadTorres, ef.peso,
+                None, None, None,
+                "SIN COCINA",
+            ])
+            continue
+
+        if not ef_list:
+            # Sin enfriador
+            cc = cc_list[0]
+            nombre_cc = equipos_por_id.get(cc.idEquipo, "")
+            nombre_rec = recetas_por_id.get(cc.idReceta, "") if cc.idReceta else ""
+            filas_lote.append([
+                lote, nombre_rec, nombre_cc, "",
+                cc.fecha_inicio, None,
+                cc.cantidadTorres, cc.peso,
+                None, None, None,
+                "SIN ENFRIADOR",
+            ])
+            continue
+
+        # Elegir la mejor pareja cocina+enfriador para este lote
+        # Criterio: misma línea si es posible; luego menor tiempo muerto no negativo.
+        mejor_cc = None
+        mejor_ef = None
+        mejor_tm = None
+
+        for cc in cc_list:
+            linea_cc = _linea_de_equipo(equipos_por_id.get(cc.idEquipo, ""))
+            for ef in ef_list:
+                linea_ef = _linea_de_equipo(equipos_por_id.get(ef.idEquipo, ""))
+                if not cc.fecha_fin or not ef.fecha_inicio:
+                    continue
+                tm = (ef.fecha_inicio - cc.fecha_fin).total_seconds()
+                if tm < 0:
+                    logger.warning(
+                        f"[generar_reporte_productividad] Lote '{lote}': tiempo muerto "
+                        f"negativo ({tm:.0f}s) para cocina {cc.id} + enfriador {ef.id}. "
+                        f"Se ignora esta pareja."
+                    )
+                    continue
+                mismo_linea_bonus = 0 if linea_cc == linea_ef else 1e9
+                score = mismo_linea_bonus + tm
+                if mejor_tm is None or score < mejor_tm:
+                    mejor_tm = score
+                    mejor_cc = cc
+                    mejor_ef = ef
+
+        if mejor_cc is None or mejor_ef is None:
+            # Hay ambos pero ninguna pareja válida
+            cc = cc_list[0]
+            ef = ef_list[0]
+            nombre_cc  = equipos_por_id.get(cc.idEquipo, "")
+            nombre_ef  = equipos_por_id.get(ef.idEquipo, "")
+            nombre_rec = recetas_por_id.get(cc.idReceta, "") if cc.idReceta else ""
+            filas_lote.append([
+                lote, nombre_rec, nombre_cc, nombre_ef,
+                cc.fecha_inicio, ef.fecha_fin if ef.fecha_fin else None,
+                cc.cantidadTorres, cc.peso,
+                None, None, None,
+                "INCONSISTENCIA TEMPORAL",
+            ])
+            logger.warning(
+                f"[generar_reporte_productividad] Lote '{lote}': "
+                f"INCONSISTENCIA TEMPORAL — no se pudo emparejar correctamente."
+            )
+            continue
+
+        # Lote completo y válido
+        cc = mejor_cc
+        ef = mejor_ef
+        nombre_cc  = equipos_por_id.get(cc.idEquipo, "")
+        nombre_ef  = equipos_por_id.get(ef.idEquipo, "")
+        nombre_rec = recetas_por_id.get(cc.idReceta, "") if cc.idReceta else ""
+
+        if not cc.fecha_inicio or not ef.fecha_fin:
+            estado_lote = "FECHAS INCOMPLETAS"
+            tiempo_transcurrido = None
+            tiempo_muerto       = None
+            tiempo_util         = None
+        else:
+            tiempo_transcurrido = ef.fecha_fin - cc.fecha_inicio  # total lote
+            tiempo_muerto_td    = ef.fecha_inicio - cc.fecha_fin
+            # tiempo_util = tiempo_cocina + tiempo_enfriador
+            # = (cc.fecha_fin - cc.fecha_inicio) + (ef.fecha_fin - ef.fecha_inicio)
+            tiempo_util_td = (
+                (cc.fecha_fin - cc.fecha_inicio) + (ef.fecha_fin - ef.fecha_inicio)
+            )
+            tiempo_transcurrido = _timedelta_a_excel(tiempo_transcurrido)
+            tiempo_muerto       = _timedelta_a_excel(tiempo_muerto_td)
+            tiempo_util         = _timedelta_a_excel(tiempo_util_td)
+            estado_lote         = "COMPLETO"
+
+        filas_lote.append([
+            lote, nombre_rec, nombre_cc, nombre_ef,
+            cc.fecha_inicio,
+            ef.fecha_fin,
+            cc.cantidadTorres,
+            cc.peso if cc.peso is not None else None,
+            tiempo_transcurrido,
+            tiempo_muerto,
+            tiempo_util,
+            estado_lote,
+        ])
+
+    filas_lote.sort(key=lambda r: r[4] or datetime.min)
+    logger.info(f"[generar_reporte_productividad] LOTE: {len(filas_lote)} filas")
+
+    # ── 7. Armar filas de PRODUCTIVIDAD ───────────────────────────────────────
+    # Solo lotes COMPLETO, agrupados por nombre de receta.
+    # Columnas: ID RECETA | RECETA | CANT CICLOS | CANT TORRES
+    #           TIEMPO UTIL [hh:mm:ss] | PESO TOTAL | KG/H
+
+    prod_por_receta = {}  # receta_nombre → {id, cant, torres, seg_util, peso}
+    receta_id_por_nombre = {}
+    # ================================================================
+    # PRODUCTIVIDAD
+    # ================================================================
+
+    prod_por_receta = defaultdict(lambda: {
+        "id_receta": 0,
+        "receta": "SIN RECETA",
+        "cantidad_ciclos": 0,
+        "cantidad_torres": 0,
+        "tiempo_util_seg": 0,
+        "peso_total": 0.0,
+    })
+
+
+    def _obtener_nombre_receta(id_receta):
+        if not id_receta:
+            return "SIN RECETA"
+
+        receta = recetas_por_id.get(id_receta)
+
+        if receta is None:
+            return "SIN RECETA"
+
+        if hasattr(receta, "nombre"):
+            return receta.nombre or "SIN RECETA"
+
+        return str(receta or "SIN RECETA")
+
+
+    def _segundos_ciclo(ciclo):
+        if ciclo.fecha_inicio is None or ciclo.fecha_fin is None:
+            return 0
+
+        segundos = int((ciclo.fecha_fin - ciclo.fecha_inicio).total_seconds())
+
+        if segundos < 0:
+            return 0
+
+        return segundos
+
+
+    # ------------------------------------------------
+    # Caso 1:
+    # Si se consulta TODOS LOS EQUIPOS, la productividad
+    # se calcula por lote completo para no duplicar peso.
+    # ------------------------------------------------
+    if id_equipo == 0:
+
+        for fila_lote in filas_lote:
+            estado_lote = str(fila_lote[11] or "").strip().upper()
+
+            if estado_lote != "COMPLETO":
+                continue
+
+            receta = fila_lote[1] or "SIN RECETA"
+            peso = float(fila_lote[7] or 0)
+            cantidad_torres = int(fila_lote[6] or 0)
+            tiempo_util_excel = fila_lote[10]
+
+            if tiempo_util_excel is None:
+                continue
+
+            tiempo_util_seg = int(float(tiempo_util_excel) * 86400)
+
+            if tiempo_util_seg <= 0:
+                continue
+
+            item = prod_por_receta[receta]
+            item["id_receta"] = 0
+            item["receta"] = receta
+            item["cantidad_ciclos"] += 2
+            item["cantidad_torres"] += cantidad_torres
+            item["peso_total"] += peso
+            item["tiempo_util_seg"] += tiempo_util_seg
+
+
+    # ------------------------------------------------
+    # Caso 2:
+    # Si se consulta un equipo o una línea, la productividad
+    # se calcula por los ciclos listados.
+    # No se exige lote completo.
+    # ------------------------------------------------
+    else:
+
+        for ciclo in ciclos_lista:
+            estado = str(ciclo.estadoMaquina or "").strip().upper()
+
+            if estado != "FINALIZADO":
+                continue
+
+            tiempo_ciclo_seg = _segundos_ciclo(ciclo)
+
+            if tiempo_ciclo_seg <= 0:
+                continue
+
+            id_receta = ciclo.idReceta or 0
+            nombre_receta = _obtener_nombre_receta(id_receta)
+
+            item = prod_por_receta[id_receta]
+            item["id_receta"] = id_receta
+            item["receta"] = nombre_receta
+            item["cantidad_ciclos"] += 1
+            item["cantidad_torres"] += int(ciclo.cantidadTorres or 0)
+            item["peso_total"] += float(ciclo.peso or 0)
+            item["tiempo_util_seg"] += tiempo_ciclo_seg
+
+
+    filas_prod = []
+
+    for _, item in prod_por_receta.items():
+        tiempo_util_seg = item["tiempo_util_seg"]
+        horas_utiles = tiempo_util_seg / 3600 if tiempo_util_seg > 0 else 0
+
+        kg_h = (
+            item["peso_total"] / horas_utiles
+            if horas_utiles > 0
+            else 0
+        )
+
+        filas_prod.append([
+            item["id_receta"],
+            item["receta"],
+            item["cantidad_ciclos"],
+            item["cantidad_torres"],
+            tiempo_util_seg / 86400,
+            item["peso_total"],
+            kg_h,
+        ])
+
+    # ── 8. Construcción del Excel desde la plantilla ──────────────────────────
+    if not _TEMPLATE_PRODUCTIVIDAD_PATH.exists():
+        logger.error(
+            f"[generar_reporte_productividad] Plantilla no encontrada: "
+            f"{_TEMPLATE_PRODUCTIVIDAD_PATH}"
+        )
+        raise FileNotFoundError(
+            f"Plantilla no encontrada: {_TEMPLATE_PRODUCTIVIDAD_PATH}"
+        )
+
+    workbook = load_workbook(_TEMPLATE_PRODUCTIVIDAD_PATH)
+
+    texto_busqueda = _nombre_busqueda_display(id_equipo, equipos_por_id)
+    fecha_ini_str  = fecha_inicio.strftime("%Y-%m-%d")
+    fecha_fin_str  = (
+        fecha_fin.replace(hour=23, minute=59, second=59)
+        if fecha_fin.hour == 23 and fecha_fin.minute == 59
+        else fecha_fin
+    ).strftime("%Y-%m-%d")
+
+    # ── 8a. Hoja LISTA CICLOS ─────────────────────────────────────────────────
+    ws_lc = workbook["LISTA CICLOS"]
+    ws_lc["B3"] = fecha_ini_str
+    ws_lc["B4"] = fecha_fin_str
+    ws_lc["B5"] = texto_busqueda
+
+    ws_lc["F4"] = cantidad_finalizados
+    ws_lc["F5"] = cantidad_cancelados
+
+    ws_lc["G4"] = torres_finalizadas
+    ws_lc["G5"] = torres_canceladas
+
+    ws_lc["H4"] = peso_finalizado
+    ws_lc["H5"] = peso_cancelado
+
+    ws_lc["H4"].number_format = "0.00"
+    ws_lc["H5"].number_format = "0.00"
+
+    HEADER_ROW_LC = 7
+    DATA_START_LC = 8
+    NCOL_LC       = 11
+
+    estilo_par_lc  = _capturar_estilo_fila(ws_lc, DATA_START_LC,     NCOL_LC)
+    estilo_impar_lc = _capturar_estilo_fila(ws_lc, DATA_START_LC + 1, NCOL_LC)
+
+    # Borrar filas de ejemplo (desde DATA_START_LC hasta max_row)
+    max_r = ws_lc.max_row
+    if max_r >= DATA_START_LC:
+        ws_lc.delete_rows(DATA_START_LC, max_r - DATA_START_LC + 1)
+
+    DATE_FMT  = r"yyyy\-mm\-dd\ hh:mm:ss"
+    TIME_FMT  = "[h]:mm:ss"
+    PESO_FMT  = "0"
+    KGH_FMT   = "0.00"
+    RELLENO_CANCELADO = PatternFill(
+        fill_type="solid",
+        start_color="F4CCCC",
+        end_color="F4CCCC",
+    )
+
+    if not filas_lista:
+        # Insertar una fila vacía para que la tabla tenga al menos 1 fila de datos
+        for c in range(1, NCOL_LC + 1):
+            ws_lc.cell(row=DATA_START_LC, column=c, value=None)
+        _aplicar_estilo_fila(ws_lc, DATA_START_LC, estilo_par_lc)
+        last_lc = DATA_START_LC
+    else:
+        for i, fila in enumerate(filas_lista):
+            row_num = DATA_START_LC + i
+            estilo = estilo_par_lc if i % 2 == 0 else estilo_impar_lc
+
+            for col_idx, valor in enumerate(fila, start=1):
+                ws_lc.cell(row=row_num, column=col_idx, value=valor)
+
+            _aplicar_estilo_fila(ws_lc, row_num, estilo)
+
+            # Aplicar formatos específicos
+            ws_lc.cell(row=row_num, column=9).number_format = DATE_FMT
+            ws_lc.cell(row=row_num, column=10).number_format = DATE_FMT
+            ws_lc.cell(row=row_num, column=11).number_format = TIME_FMT
+
+            if fila[5] is not None:
+                ws_lc.cell(row=row_num, column=6).number_format = PESO_FMT
+
+            # Marcar en rojo claro toda la fila si el ciclo fue cancelado.
+            estado_fila = str(fila[7] or "").strip().upper()
+
+            if estado_fila in ESTADOS_CANCELADOS:
+                for col_idx in range(1, NCOL_LC + 1):
+                    ws_lc.cell(
+                        row=row_num,
+                        column=col_idx,
+                    ).fill = _copy.copy(RELLENO_CANCELADO)
+
+        last_lc = DATA_START_LC + len(filas_lista) - 1
+
+    _actualizar_tabla(ws_lc, "Tabla2", f"A{HEADER_ROW_LC}:K{last_lc}")
+    # Tabla4 (resumen E3:H5) no necesita cambio de rango, solo actualizar fórmulas
+    # que ya referencian la columna H (ESTADO). Como sus fórmulas son dinámicas
+    # y apuntan a rangos fijos de la plantilla, actualizar Tabla2 es suficiente;
+    # las fórmulas de Tabla4 referencian el rango correcto si la tabla crece.
+
+    logger.info(f"[generar_reporte_productividad] LISTA CICLOS tabla → A{HEADER_ROW_LC}:K{last_lc}")
+
+    # ── 8b. Hoja LOTE ─────────────────────────────────────────────────────────
+    ws_lt = workbook["LOTE"]
+    ws_lt["B3"] = fecha_ini_str
+    ws_lt["B4"] = fecha_fin_str
+    ws_lt["B5"] = texto_busqueda
+
+    HEADER_ROW_LT = 7
+    DATA_START_LT = 8
+    NCOL_LT       = 11  # columna K (estado del lote va fuera de tabla, no se muestra)
+
+    estilo_par_lt   = _capturar_estilo_fila(ws_lt, DATA_START_LT,     NCOL_LT)
+    estilo_impar_lt = _capturar_estilo_fila(ws_lt, DATA_START_LT + 1, NCOL_LT)
+
+    max_r_lt = ws_lt.max_row
+    if max_r_lt >= DATA_START_LT:
+        ws_lt.delete_rows(DATA_START_LT, max_r_lt - DATA_START_LT + 1)
+
+    if not filas_lote:
+        for c in range(1, NCOL_LT + 1):
+            ws_lt.cell(row=DATA_START_LT, column=c, value=None)
+        _aplicar_estilo_fila(ws_lt, DATA_START_LT, estilo_par_lt)
+        last_lt = DATA_START_LT
+    else:
+        for i, fila in enumerate(filas_lote):
+            row_num = DATA_START_LT + i
+            estilo  = estilo_par_lt if i % 2 == 0 else estilo_impar_lt
+            # fila: [lote, receta, cocina, enfriador, inicio, fin,
+            #        torres, peso, t_transcurrido, t_muerto, t_util, estado]
+            valores = fila[:11]  # 11 columnas del Excel; estado (col 12) es interno
+            for col_idx, valor in enumerate(valores, start=1):
+                ws_lt.cell(row=row_num, column=col_idx, value=valor)
+            _aplicar_estilo_fila(ws_lt, row_num, estilo)
+            ws_lt.cell(row=row_num, column=5).number_format  = DATE_FMT
+            ws_lt.cell(row=row_num, column=6).number_format  = DATE_FMT
+            ws_lt.cell(row=row_num, column=9).number_format  = TIME_FMT
+            ws_lt.cell(row=row_num, column=10).number_format = TIME_FMT
+            ws_lt.cell(row=row_num, column=11).number_format = TIME_FMT
+        last_lt = DATA_START_LT + len(filas_lote) - 1
+
+    _actualizar_tabla(ws_lt, "Tabla1", f"A{HEADER_ROW_LT}:K{last_lt}")
+    logger.info(f"[generar_reporte_productividad] LOTE tabla → A{HEADER_ROW_LT}:K{last_lt}")
+
+    # ── 8c. Hoja PRODUCTIVIDAD ────────────────────────────────────────────────
+    ws_pr = workbook["PRODUCTIVIDAD"]
+    ws_pr["B3"] = fecha_ini_str
+    ws_pr["B4"] = fecha_fin_str
+    ws_pr["B5"] = texto_busqueda
+
+    HEADER_ROW_PR = 7
+    DATA_START_PR = 8
+    NCOL_PR       = 7
+
+    estilo_par_pr   = _capturar_estilo_fila(ws_pr, DATA_START_PR,     NCOL_PR)
+    estilo_impar_pr = _capturar_estilo_fila(ws_pr, DATA_START_PR + 1, NCOL_PR)
+    # La fila de TOTALES (última fila de la plantilla)
+    totales_row_orig = ws_pr.max_row
+    estilo_totales   = _capturar_estilo_fila(ws_pr, totales_row_orig, NCOL_PR)
+
+    max_r_pr = ws_pr.max_row
+    if max_r_pr >= DATA_START_PR:
+        ws_pr.delete_rows(DATA_START_PR, max_r_pr - DATA_START_PR + 1)
+
+    if not filas_prod:
+        for c in range(1, NCOL_PR + 1):
+            ws_pr.cell(row=DATA_START_PR, column=c, value=None)
+        _aplicar_estilo_fila(ws_pr, DATA_START_PR, estilo_par_pr)
+        last_data_pr = DATA_START_PR
+    else:
+        for i, fila in enumerate(filas_prod):
+            row_num = DATA_START_PR + i
+            estilo  = estilo_par_pr if i % 2 == 0 else estilo_impar_pr
+            for col_idx, valor in enumerate(fila, start=1):
+                ws_pr.cell(row=row_num, column=col_idx, value=valor)
+            _aplicar_estilo_fila(ws_pr, row_num, estilo)
+            ws_pr.cell(row=row_num, column=5).number_format = TIME_FMT
+            ws_pr.cell(row=row_num, column=6).number_format = PESO_FMT
+            ws_pr.cell(row=row_num, column=7).number_format = KGH_FMT
+        last_data_pr = DATA_START_PR + len(filas_prod) - 1
+
+    # Fila de TOTALES.
+    # El bloque nuevo de PRODUCTIVIDAD ya no usa la variable `totales`.
+    # Los totales deben calcularse desde `filas_prod`.
+    totales_row = last_data_pr + 1
+
+    total_ciclos = sum(int(fila[2] or 0) for fila in filas_prod)
+    total_torres = sum(int(fila[3] or 0) for fila in filas_prod)
+    total_tiempo_excel = sum(float(fila[4] or 0) for fila in filas_prod)
+    total_peso = sum(float(fila[5] or 0) for fila in filas_prod)
+
+    total_seg_util = int(round(total_tiempo_excel * 86400))
+    horas_tot = total_seg_util / 3600.0
+    kg_h_tot = (total_peso / horas_tot) if horas_tot > 0 else 0.0
+
+    ws_pr.cell(row=totales_row, column=1, value="TOTALES")
+    ws_pr.cell(row=totales_row, column=3, value=total_ciclos)
+    ws_pr.cell(row=totales_row, column=4, value=total_torres)
+    ws_pr.cell(row=totales_row, column=5, value=_segundos_a_excel(total_seg_util))
+    ws_pr.cell(row=totales_row, column=6, value=total_peso)
+    ws_pr.cell(row=totales_row, column=7, value=round(kg_h_tot, 2))
+
+    _actualizar_tabla(ws_pr, "ResumenProductividad",
+                      f"A{HEADER_ROW_PR}:G{totales_row}")
+
+
+    # ── 9. Guardar y retornar ─────────────────────────────────────────────────
+    excel_stream = BytesIO()
+    workbook.save(excel_stream)
+    workbook.close()
+    excel_stream.seek(0)
+
+    return excel_stream
+
 
 def productividad_equipo(db, fecha_inicio, fecha_fin, id_equipo):
     fecha_inicio = datetime.combine(fecha_inicio, datetime.min.time())
@@ -1500,5 +2309,3 @@ def obtener_datos_graficos(db, id_ciclo:int):
     lista_sensores_data["general"] = general
 
     return lista_sensores_data
-
-
