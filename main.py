@@ -22,6 +22,7 @@ from models.estadoCiclo import EstadoCiclo
 from models.alarmas import Alarmas
 from models.alarmasL2 import AlarmasL2
 from models.historicoAlarma import HistoricoAlarma
+from models.usuarios import Usuario
 
 from routers import equiposDatos, historicoGraficos, historicoProductividad, historicoAlarmas
 
