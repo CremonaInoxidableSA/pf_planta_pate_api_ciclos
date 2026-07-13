@@ -10,6 +10,7 @@ import os
 import json
 import logging
 import asyncio
+import ua
 
 from config.db import get_db
 
@@ -286,16 +287,16 @@ class ObtenerNodosOpcUA:
         """
         nodos_suscritos  = []
         objects_node     = root_node.get_child(["0:Objects"])
-        server_ifaces    = objects_node.get_child(["2:Server interfaces"])
-        pf_l1            = server_ifaces.get_child(["2:PF-L1"])
-        pf_l2            = server_ifaces.get_child(["2:PF-L2"])
+        server_ifaces    = objects_node.get_child(["3:ServerInterfaces"])
+        pf_l1            = server_ifaces.get_child(["4:PF-L1"])
+        pf_l2            = server_ifaces.get_child(["5:PF-L2"])
         self._pf_l1_node = pf_l1
 
         grupos = [
-            (pf_l1.get_child(["2:COCINA L1"]),    "PF-L1", "COCINA",    0),
-            (pf_l1.get_child(["2:ENFRIADOR L1"]), "PF-L1", "ENFRIADOR", 6),
-            (pf_l2.get_child(["2:COCINA L2"]),    "PF-L2", "COCINA",    3),
-            (pf_l2.get_child(["2:ENFRIADOR L2"]), "PF-L2", "ENFRIADOR", 10),
+            (pf_l1.get_child(["4:COCINA L1"]),    "PF-L1", "COCINA",    0),
+            (pf_l1.get_child(["4:ENFRIADOR L1"]), "PF-L1", "ENFRIADOR", 6),
+            (pf_l2.get_child(["5:COCINA L2"]),    "PF-L2", "COCINA",    3),
+            (pf_l2.get_child(["5:ENFRIADOR L2"]), "PF-L2", "ENFRIADOR", 10),
         ]
         for grupo_node, linea, tipo, offset_id in grupos:
             logger.info(f"Navegando {linea} / {tipo}...")
@@ -314,7 +315,7 @@ class ObtenerNodosOpcUA:
     def _obtener_recetario_desde_opc_sync(self, pf_l1_node):
         recetario_cache = {}
         try:
-            recetario_node = pf_l1_node.get_child(["2:RECETARIO"])
+            recetario_node = pf_l1_node.get_child(["4:RECETARIO"])
             for item_node in self._sorted_children(recetario_node):
                 item_name = item_node.get_browse_name().Name
                 try:
@@ -325,7 +326,7 @@ class ObtenerNodosOpcUA:
                 recetario_cache[numero_receta] = {
                     "NOMBRE":                hijos["NOMBRE"].get_value()                     if "NOMBRE"                in hijos else f"RECETA_{numero_receta:02}",
                     "PASOS":                 hijos["PASOS"].get_value()                      if "PASOS"                 in hijos else 0,
-                    "TEMP_AGUA":             self._read_array_object(hijos["TEMP_AGUA"])     if "TEMP_AGUA"             in hijos else [],
+                    "TEMP_AGUA":             self._read_array_object(hijos["TEMP AGUA"])     if "TEMP AGUA"             in hijos else [],
                     "TEMP_PRODUCTO":         self._read_array_object(hijos["TEMP PRODUCTO"]) if "TEMP PRODUCTO"         in hijos else [],
                     "TIEMPO_CORTE":          self._read_array_object(hijos["TIEMPO CORTE"])  if "TIEMPO CORTE"          in hijos else [],
                     "TIPO_CORTE":            self._read_array_object(hijos["TIPO CORTE"])    if "TIPO CORTE"            in hijos else [],
@@ -665,6 +666,7 @@ class ObtenerNodosOpcUA:
             if receta:
                 receta.nroPaso = nro_paso
                 receta.tipoFin = tipo_fin
+                
                 self.session.commit()
                 return receta.id
 

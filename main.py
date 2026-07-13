@@ -44,7 +44,6 @@ URL        = f"opc.tcp://{opc_ip}:{opc_port}"
 opc_client = OPCUAClient(URL)
 
 db.Base.metadata.create_all(bind=db.engine)
-
 dGeneral = ObtenerNodosOpcUA(opc_client)
 
 ruta_sql_sensores = os.path.join(ruta_principal, 'data', 'insert_sensores.sql')
@@ -79,7 +78,6 @@ async def central_opc_render():
             logger.error(f"Error en el loop WebSocket: {e}")
         await asyncio.sleep(1.0)
 
-
 async def monitor_opc(period_ms: int = 500, check_interval: int = 10):
     logger.info(f"Monitor OPC iniciado (ping cada {check_interval}s).")
     while True:
@@ -109,7 +107,6 @@ async def monitor_opc(period_ms: int = 500, check_interval: int = 10):
             except Exception as e:
                 logger.error(f"❌ Error durante la recuperación OPC: {e}")
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     session = db.SessionLocal()
@@ -121,7 +118,6 @@ async def lifespan(app: FastAPI):
 
         asyncio.create_task(central_opc_render())
         asyncio.create_task(monitor_opc(period_ms=500, check_interval=10))
-
         if session.query(Sensores).count() == 0:
             logger.info("Cargando registros BDD [Sensores]")
             cargar_archivo_sql(ruta_sql_sensores)
