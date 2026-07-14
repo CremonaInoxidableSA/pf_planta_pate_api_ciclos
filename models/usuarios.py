@@ -25,7 +25,7 @@ class Usuario(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
 
     email = Column(String(255), nullable=False, unique=True, index=True)
-    usuario = Column(String(50), nullable=False, unique=True, index=True)
+    username = Column(String(50), nullable=False, unique=True, index=True)
 
     nombre = Column(String(100), nullable=False)
     apellido = Column(String(100), nullable=False)

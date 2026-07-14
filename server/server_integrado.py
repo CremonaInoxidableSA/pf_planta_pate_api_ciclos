@@ -654,7 +654,7 @@ def main():
 
     objects = server.get_objects_node()
 
-    server_interfaces = objects.add_object(idx, "Server interfaces")
+    server_interfaces = objects.add_object(idx, "ServerInterfaces")
 
     pf_l1 = server_interfaces.add_object(idx, "PF-L1")
 
