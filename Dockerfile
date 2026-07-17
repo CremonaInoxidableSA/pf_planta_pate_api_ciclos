@@ -20,4 +20,4 @@ RUN pip install aiosmtplib
 RUN pip install Pillow
 RUN pip install --upgrade pip
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]

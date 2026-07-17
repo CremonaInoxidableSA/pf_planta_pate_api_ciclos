@@ -1,178 +1,222 @@
 [
   {
     "id_historial": 1,
-    "tiempo": "2026-07-14 12:11:17",
+    "tiempo": "2026-07-17 12:39:36",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
     "temp_agua": 24.0,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1637.81005859375
+    "niv_agua": 1643.0999755859375
   },
   {
     "id_historial": 2,
-    "tiempo": "2026-07-14 12:11:18",
+    "tiempo": "2026-07-17 12:39:37",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
     "temp_agua": 23.270000457763672,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1586.68994140625
+    "niv_agua": 1610.739990234375
   },
   {
     "id_historial": 3,
-    "tiempo": "2026-07-14 12:11:19",
+    "tiempo": "2026-07-17 12:39:38",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
     "temp_agua": 22.530000686645508,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1648.3900146484375
+    "niv_agua": 1581.489990234375
   },
   {
     "id_historial": 4,
-    "tiempo": "2026-07-14 12:11:20",
+    "tiempo": "2026-07-17 12:39:40",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
     "temp_agua": 21.799999237060547,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1595.8699951171875
+    "niv_agua": 1591.5799560546875
   },
   {
     "id_historial": 5,
-    "tiempo": "2026-07-14 12:11:21",
+    "tiempo": "2026-07-17 12:39:41",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
     "temp_agua": 21.06999969482422,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1625.6700439453125
+    "niv_agua": 1606.77001953125
   },
   {
     "id_historial": 6,
-    "tiempo": "2026-07-14 12:11:22",
+    "tiempo": "2026-07-17 12:39:42",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
     "temp_agua": 20.329999923706055,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1641.7900390625
+    "niv_agua": 1621.699951171875
   },
   {
     "id_historial": 7,
-    "tiempo": "2026-07-14 12:11:23",
+    "tiempo": "2026-07-17 12:39:43",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
     "temp_agua": 19.600000381469727,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1584.06005859375
+    "niv_agua": 1586.06005859375
   },
   {
     "id_historial": 8,
-    "tiempo": "2026-07-14 12:11:24",
+    "tiempo": "2026-07-17 12:39:44",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
-    "temp_agua": 18.1299991607666,
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
+    "temp_agua": 18.8700008392334,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1561.8399658203125
+    "niv_agua": 1592.010009765625
   },
   {
     "id_historial": 9,
-    "tiempo": "2026-07-14 12:11:25",
+    "tiempo": "2026-07-17 12:39:45",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
-    "temp_agua": 17.399999618530273,
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
+    "temp_agua": 18.1299991607666,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1641.3800048828125
+    "niv_agua": 1606.5799560546875
   },
   {
     "id_historial": 10,
-    "tiempo": "2026-07-14 12:11:26",
+    "tiempo": "2026-07-17 12:39:46",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
-    "temp_agua": 16.670000076293945,
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
+    "temp_agua": 17.399999618530273,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1582.3800048828125
+    "niv_agua": 1586.9100341796875
   },
   {
     "id_historial": 11,
-    "tiempo": "2026-07-14 12:11:27",
+    "tiempo": "2026-07-17 12:39:47",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
-    "temp_agua": 15.930000305175781,
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
+    "temp_agua": 16.670000076293945,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1642.6800537109375
+    "niv_agua": 1581.06005859375
   },
   {
     "id_historial": 12,
-    "tiempo": "2026-07-14 12:11:28",
+    "tiempo": "2026-07-17 12:39:48",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
-    "temp_agua": 15.199999809265137,
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
+    "temp_agua": 15.930000305175781,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1561.4599609375
+    "niv_agua": 1618.6800537109375
   },
   {
     "id_historial": 13,
-    "tiempo": "2026-07-14 12:11:30",
+    "tiempo": "2026-07-17 12:39:49",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
     "temp_agua": 14.470000267028809,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1615.030029296875
+    "niv_agua": 1566.6199951171875
   },
   {
     "id_historial": 14,
-    "tiempo": "2026-07-14 12:11:31",
+    "tiempo": "2026-07-17 12:39:50",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
     "temp_agua": 13.729999542236328,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1570.3399658203125
+    "niv_agua": 1567.1800537109375
   },
   {
     "id_historial": 15,
-    "tiempo": "2026-07-14 12:11:32",
+    "tiempo": "2026-07-17 12:39:52",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
     "temp_agua": 13.0,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1618.6700439453125
+    "niv_agua": 1646.510009765625
   },
   {
     "id_historial": 16,
-    "tiempo": "2026-07-14 12:11:33",
+    "tiempo": "2026-07-17 12:39:53",
     "estado": "PRE OPERACIONAL",
-    "idCiclo": 62,
-    "lote": "ENF-08-C0010",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
     "temp_agua": 12.270000457763672,
     "temp_ingreso": 8.0,
     "temp_prod": 0.0,
-    "niv_agua": 1592.8299560546875
+    "niv_agua": 1592.77001953125
+  },
+  {
+    "id_historial": 17,
+    "tiempo": "2026-07-17 12:39:54",
+    "estado": "PRE OPERACIONAL",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
+    "temp_agua": 11.529999732971191,
+    "temp_ingreso": 8.0,
+    "temp_prod": 0.0,
+    "niv_agua": 1610.1800537109375
+  },
+  {
+    "id_historial": 18,
+    "tiempo": "2026-07-17 12:39:55",
+    "estado": "PRE OPERACIONAL",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
+    "temp_agua": 10.800000190734863,
+    "temp_ingreso": 8.0,
+    "temp_prod": 0.0,
+    "niv_agua": 1563.27001953125
+  },
+  {
+    "id_historial": 19,
+    "tiempo": "2026-07-17 12:39:56",
+    "estado": "PRE OPERACIONAL",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
+    "temp_agua": 10.069999694824219,
+    "temp_ingreso": 8.0,
+    "temp_prod": 0.0,
+    "niv_agua": 1621.3299560546875
+  },
+  {
+    "id_historial": 20,
+    "tiempo": "2026-07-17 12:39:57",
+    "estado": "PRE OPERACIONAL",
+    "idCiclo": 294,
+    "lote": "ENF-08-C0027",
+    "temp_agua": 9.329999923706055,
+    "temp_ingreso": 8.0,
+    "temp_prod": 0.0,
+    "niv_agua": 1641.8499755859375
   }
 ]

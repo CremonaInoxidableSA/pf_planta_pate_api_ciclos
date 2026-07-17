@@ -10,7 +10,7 @@ import logging
 
 logger = logging.getLogger("uvicorn")
 
-RouterAlarmas = APIRouter(prefix="/historico-alarmas", tags=["Alarmas Historico"]) 
+RouterAlarmas = APIRouter(prefix="", tags=["Alarmas Historico"]) 
 @RouterAlarmas.get("/alarmas")
 def listar_alarmas_bdd(
     fecha_inicio: date = Query(..., description="Fecha de inicio (YYYY-MM-DD)"),

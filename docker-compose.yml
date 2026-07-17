@@ -42,6 +42,29 @@ services:
     environment:
       DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
     ports:
+      - "8001:8001"
+    volumes:
+      - .:/app
+    command: >
+      uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+    networks:
+      bridge_network:
+      macvlan_network:
+        ipv4_address: 192.168.10.115
+  
+  auth_app:
+    build: 
+      context: ../
+      dockerfile: auth.Dockerfile
+    container_name: fastapi__auth_container
+    restart: always
+    depends_on:
+      - fastapi_app
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
+    ports:
       - "8000:8000"
     volumes:
       - .:/app
@@ -50,6 +73,6 @@ services:
     networks:
       bridge_network:
       macvlan_network:
-        ipv4_address: 192.168.10.115
+        ipv4_address: 192.168.10.114
 volumes:
   mysql_data:
