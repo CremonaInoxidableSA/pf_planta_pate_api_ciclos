@@ -148,6 +148,15 @@ _TEMPLATE_INFORME_CICLO_PATH = (
     / "INFORME_CICLO.xlsx"
 )
  
+_TEMPLATE_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "data"
+    / "INFORME_ALARMA.xlsx"
+)
+_HOJA_INFORME_ALARMAS = "LISTA COMPLETA"
+_ALARMA_HEADER_ROW = 6
+_ALARMA_DATA_START_ROW = 7
+_ALARMA_TABLE_COLS = 7  # A..G
  
 # ============================================================
 # FUNCIONES AUXILIARES (reemplazan las versiones previas)
@@ -1218,60 +1227,95 @@ def obtener_historico_alarmas(fecha_inicio, fecha_fin, session):
 
     return datos
 
+def _calc_elapsed_excel(fi, ff):
+    """Devuelve un timedelta para que Excel conserve una duración calculable."""
+    if fi is None or ff is None or ff < fi:
+        return None
+    return ff - fi
+
 def generar_reporte_alarmas_descarga(session, fecha_inicio_dt, fecha_fin_dt):
+    if fecha_inicio_dt is None or fecha_fin_dt is None:
+        raise ValueError("Debe indicar fecha_inicio_dt y fecha_fin_dt")
+    if fecha_inicio_dt > fecha_fin_dt:
+        raise ValueError("La fecha inicial no puede ser posterior a la fecha final")
+
     datos = obtener_historico_alarmas(fecha_inicio_dt, fecha_fin_dt, session)
 
+    if not _TEMPLATE_PATH.exists():
+        raise FileNotFoundError(
+            f"No se encontró la plantilla del informe de alarmas: {_TEMPLATE_PATH}"
+        )
+
     wb = load_workbook(_TEMPLATE_PATH)
-    ws = wb["informe alarmas"]
+    if _HOJA_INFORME_ALARMAS not in wb.sheetnames:
+        wb.close()
+        raise ValueError(
+            f"La plantilla no contiene la hoja '{_HOJA_INFORME_ALARMAS}'"
+        )
 
-    # Fechas de encabezado (mantiene el formato dd/mm/yyyy de la plantilla)
-    ws["B2"] = fecha_inicio_dt
-    ws["B3"] = fecha_fin_dt
+    ws = wb[_HOJA_INFORME_ALARMAS]
 
-    # ── Capturar estilos de la fila placeholder (ahora es fila 6) ──
-    _NCOLS = 7
+    # La plantilla reserva A3 y A4 para mostrar el período consultado.
+    fecha_inicio_texto = fecha_inicio_dt.strftime("%Y-%m-%d %H:%M:%S")
+    fecha_fin_texto = fecha_fin_dt.strftime("%Y-%m-%d %H:%M:%S")
+    ws["A3"] = f"Fecha inicial de Filtrado: {fecha_inicio_texto}"
+    ws["A4"] = f"Fecha final de Filtrado: {fecha_fin_texto}"
+
+    # La fila 6 es el encabezado real de la tabla. La fila 7 se utiliza como
+    # patrón para conservar el formato de los datos de la plantilla.
     col_styles = []
-    for c in range(1, _NCOLS + 1):
-        src = ws.cell(row=6, column=c)          # ← fila 6
+    for c in range(1, _ALARMA_TABLE_COLS + 1):
+        src = ws.cell(row=_ALARMA_DATA_START_ROW, column=c)
         col_styles.append({
             "font":          _copy.copy(src.font),
             "fill":          _copy.copy(src.fill),
             "border":        _copy.copy(src.border),
             "alignment":     _copy.copy(src.alignment),
             "number_format": src.number_format,
+            "protection":    _copy.copy(src.protection),
         })
 
-    ws.delete_rows(6)                            # ← eliminar fila 6
+    # Quitar únicamente los datos de muestra; no borrar el encabezado ni el
+    # diseño superior del informe.
+    if ws.max_row >= _ALARMA_DATA_START_ROW:
+        ws.delete_rows(
+            _ALARMA_DATA_START_ROW,
+            ws.max_row - _ALARMA_DATA_START_ROW + 1,
+        )
 
-    DATA_START = 6                               # ← datos desde fila 6
-    DATE_FMT   = "DD/MM/YYYY HH:MM:SS"
+    date_format = "yyyy-mm-dd hh:mm:ss"
+    elapsed_format = "[hh]:mm:ss"
 
     if not datos:
-        for c in range(1, _NCOLS + 1):
-            cell = ws.cell(row=DATA_START, column=c, value=None)
+        # Se conserva una fila vacía para que la tabla de Excel siga siendo
+        # válida y mantenga sus filtros y estilo visual.
+        for c in range(1, _ALARMA_TABLE_COLS + 1):
+            cell = ws.cell(row=_ALARMA_DATA_START_ROW, column=c, value=None)
             _apply_style(cell, col_styles[c - 1])
-        last_row = DATA_START
+        last_row = _ALARMA_DATA_START_ROW
     else:
         for i, row_data in enumerate(datos):
-            row_num = DATA_START + i
+            row_num = _ALARMA_DATA_START_ROW + i
             fi = row_data.get("fecha_inicio")
             ff = row_data.get("fecha_fin")
             row_values = [
-                row_data.get("id"),
                 row_data.get("nombre_alarmas"),
                 row_data.get("tipo_alarma"),
                 row_data.get("seccion"),
+                row_data.get("descripcion"),
                 fi,
                 ff,
-                _calc_elapsed(fi, ff),
+                _calc_elapsed_excel(fi, ff),
             ]
             for col_idx, value in enumerate(row_values, start=1):
                 cell = ws.cell(row=row_num, column=col_idx, value=value)
                 _apply_style(cell, col_styles[col_idx - 1])
                 if col_idx in (5, 6) and isinstance(value, datetime):
-                    cell.number_format = DATE_FMT
+                    cell.number_format = date_format
+                elif col_idx == 7 and value is not None:
+                    cell.number_format = elapsed_format
 
-        last_row = DATA_START + len(datos) - 1
+        last_row = _ALARMA_DATA_START_ROW + len(datos) - 1
 
     _update_table(ws, new_last_row=last_row)
 
@@ -1280,6 +1324,7 @@ def generar_reporte_alarmas_descarga(session, fecha_inicio_dt, fecha_fin_dt):
     wb.close()
     output.seek(0)
     return output
+
 
 def _apply_style(cell, style: dict):
     cell.font          = _copy.copy(style["font"])
@@ -1305,12 +1350,12 @@ def _update_table(ws, new_last_row: int):
     if not ws.tables:
         return
     tbl_name = next(iter(ws.tables))
-    tbl      = ws.tables[tbl_name]
-    style    = tbl.tableStyleInfo          # puede ser None, lo preservamos igual
-    del ws.tables[tbl_name]
-    new_tbl = Table(displayName=tbl_name, ref=f"A5:G{new_last_row}")  # ← A5
-    new_tbl.tableStyleInfo = style
-    ws.add_table(new_tbl)
+    tbl = ws.tables[tbl_name]
+    new_ref = f"A{_ALARMA_HEADER_ROW}:G{new_last_row}"
+    tbl.ref = new_ref
+    if tbl.autoFilter is not None:
+        tbl.autoFilter.ref = new_ref
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

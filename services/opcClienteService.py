@@ -16,6 +16,12 @@ from config.db import get_db
 
 logger = logging.getLogger("uvicorn")
 
+
+TEMP_DEADBAND = 0.5       # °C
+INTERVALO_MINIMO = 10       # segundos
+INTERVALO_MAXIMO = 60       # segundos
+
+
 EQUIPOS_MAP = {
     1:  "PF-L1-COCINA-1",
     2:  "PF-L1-COCINA-2",
@@ -174,6 +180,71 @@ def _construir_tramos_estado(historial: list) -> list[dict]:
     })
     return tramos
 
+
+def _debe_guardar_temperaturas(
+    historial,
+    ahora,
+    datos,
+    estado_actual,
+    intervalo_minimo=1,
+    intervalo_maximo=5,
+    deadband=0.05,
+):
+    if not historial:
+        return True
+
+    ultimo = historial[-1]
+
+    # Siempre registrar cambios operativos.
+    if ultimo.get("estado") != estado_actual:
+        return True
+
+    try:
+        tiempo_anterior = datetime.strptime(
+            ultimo["tiempo"],
+            "%Y-%m-%d %H:%M:%S",
+        )
+    except (KeyError, TypeError, ValueError):
+        return True
+
+    segundos = (ahora - tiempo_anterior).total_seconds()
+
+    # Evita escribir más de una vez por segundo.
+    if segundos < intervalo_minimo:
+        return False
+
+    # Heartbeat: aunque no cambie nada, guardar cada 5 segundos.
+    if segundos >= intervalo_maximo:
+        return True
+
+    campos = {
+        "temp_agua": "TEMP_AGUA",
+        "temp_ingreso": "TEMP_INGRESO",
+        "temp_prod": "TEMP_PRODUCTO",
+    }
+
+    for campo_json, campo_opc in campos.items():
+        valor_actual = datos.get(campo_opc)
+        valor_anterior = ultimo.get(campo_json)
+
+        # Registrar aparición o desaparición de un dato.
+        if (valor_actual is None) != (valor_anterior is None):
+            return True
+
+        if valor_actual is None:
+            continue
+
+        try:
+            diferencia = abs(
+                float(valor_actual) - float(valor_anterior)
+            )
+        except (TypeError, ValueError):
+            return True
+
+        if diferencia >= deadband:
+            return True
+
+    return False
 
 # -----------------------------------------------------------------------
 # Clase principal
@@ -1088,11 +1159,21 @@ class ObtenerNodosOpcUA:
     # datosGenerales — loop principal de lectura y publicacion WebSocket
     # -----------------------------------------------------------------------
 
+    
+
     async def datosGenerales(self):
         resultado = {
             "datos-cocinas":     [],
             "datos-enfriadores": [],
         }
+        def redondear_un_decimal(valor):
+            if valor is None:
+                return "Sin registro"
+
+            try:
+                return round(float(valor), 1)
+            except (TypeError, ValueError):
+                return "Sin registro"
 
         try:
             for equipo in self._equipos:
@@ -1147,19 +1228,31 @@ class ObtenerNodosOpcUA:
                         # Timestamp sin microsegundos (consistencia con BD)
                         ahora = datetime.now().replace(microsecond=0)
 
-                        nuevo_paso = {
-                            "id_historial": len(historial_actual) + 1,
-                            "tiempo":       ahora.strftime("%Y-%m-%d %H:%M:%S"),
-                            "estado":       estado_actual,
-                            "idCiclo":      id_ciclo,
-                            "lote":         lote_ciclo,
-                            "temp_agua":    datos.get("TEMP_AGUA"),
-                            "temp_ingreso": datos.get("TEMP_INGRESO"),
-                            "temp_prod":    datos.get("TEMP_PRODUCTO"),
-                            "niv_agua":     datos.get("NIVEL_AGUA"),
-                        }
-                        historial_actual.append(nuevo_paso)
-                        self._guardar_historial_json(archivo_historial, historial_actual)
+                        guardar_muestra = self._debe_guardar_temperaturas(
+                            historial=historial_actual,
+                            ahora=ahora,
+                            datos=datos,
+                            estado_actual=estado_actual,
+                        )
+
+                        if guardar_muestra:
+                            nuevo_paso = {
+                                "id_historial": len(historial_actual) + 1,
+                                "tiempo":       ahora.strftime("%Y-%m-%d %H:%M:%S"),
+                                "estado":       estado_actual,
+                                "idCiclo":      id_ciclo,
+                                "lote":         lote_ciclo,
+                                "temp_agua":    redondear_un_decimal(datos.get("TEMP_AGUA")),
+                                "temp_ingreso": redondear_un_decimal(datos.get("TEMP_INGRESO")),
+                                "temp_prod":    redondear_un_decimal(datos.get("TEMP_PRODUCTO")),
+                                "niv_agua":     datos.get("NIVEL_AGUA"),
+                            }
+
+                            historial_actual.append(nuevo_paso)
+                            self._guardar_historial_json(
+                                archivo_historial,
+                                historial_actual,
+                            )
 
                         # Trazabilidad IO — deteccion de cambios en tiempo real
                         self._actualizar_io_state(key_estado, tipo, datos, id_ciclo, ahora)
@@ -1202,9 +1295,9 @@ class ObtenerNodosOpcUA:
                         "id":                 id_equipo,
                         "linea":              linea,
                         "estado":             estado_actual,
-                        "temp_agua":          datos.get("TEMP_AGUA"),
-                        "temp_prod":          datos.get("TEMP_PRODUCTO"),
-                        "temp_ingreso":       datos.get("TEMP_INGRESO"),
+                        "temp_prod":          redondear_un_decimal(datos.get("TEMP_PRODUCTO")),
+                        "temp_agua":          redondear_un_decimal(datos.get("TEMP_AGUA")),
+                        "temp_ingreso":       redondear_un_decimal(datos.get("TEMP_INGRESO")),
                         "niv_agua":           datos.get("NIVEL_AGUA"),
                         "receta":             nombre_receta,
                         "receta_paso_actual": datos.get("PASO_ACTUAL"),
