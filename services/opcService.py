@@ -1093,14 +1093,6 @@ class ObtenerNodosOpcUA:
             "datos-cocinas":     [],
             "datos-enfriadores": [],
         }
-        def redondear_un_decimal(valor):
-            if valor is None:
-                return "Sin registro"
-
-            try:
-                return round(float(valor), 1)
-            except (TypeError, ValueError):
-                return "Sin registro"
 
         try:
             for equipo in self._equipos:
@@ -1161,9 +1153,9 @@ class ObtenerNodosOpcUA:
                             "estado":       estado_actual,
                             "idCiclo":      id_ciclo,
                             "lote":         lote_ciclo,
-                            "temp_agua":    redondear_un_decimal(datos.get("TEMP_AGUA")),
-                            "temp_ingreso": redondear_un_decimal(datos.get("TEMP_INGRESO")),
-                            "temp_prod":    redondear_un_decimal(datos.get("TEMP_PRODUCTO")),
+                            "temp_agua":    datos.get("TEMP_AGUA"),
+                            "temp_ingreso": datos.get("TEMP_INGRESO"),
+                            "temp_prod":    datos.get("TEMP_PRODUCTO"),
                             "niv_agua":     datos.get("NIVEL_AGUA"),
                         }
                         historial_actual.append(nuevo_paso)
@@ -1210,9 +1202,9 @@ class ObtenerNodosOpcUA:
                         "id":                 id_equipo,
                         "linea":              linea,
                         "estado":             estado_actual,
-                        "temp_prod":          redondear_un_decimal(datos.get("TEMP_PRODUCTO")),
-                        "temp_agua":          redondear_un_decimal(datos.get("TEMP_AGUA")),
-                        "temp_ingreso":       redondear_un_decimal(datos.get("TEMP_INGRESO")),
+                        "temp_agua":          datos.get("TEMP_AGUA"),
+                        "temp_prod":          datos.get("TEMP_PRODUCTO"),
+                        "temp_ingreso":       datos.get("TEMP_INGRESO"),
                         "niv_agua":           datos.get("NIVEL_AGUA"),
                         "receta":             nombre_receta,
                         "receta_paso_actual": datos.get("PASO_ACTUAL"),

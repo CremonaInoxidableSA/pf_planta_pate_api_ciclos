@@ -2327,7 +2327,7 @@ def obtener_datos_graficos(db, id_ciclo:int):
             general["temp_agua_min"] = obtener_valor_sensores(db,id_ciclo, sensor.id, "MIN")
             lista_sensores_data[sensor.nombre] = temp_agua
         
-        if sensor.nombre == "Temperatura producto":
+        if sensor.nombre == "Temperatura ingreso":
             temp_producto = (
                 db.query(SensoresAA)
                 .filter(SensoresAA.idSensor == sensor.id)
@@ -2335,8 +2335,8 @@ def obtener_datos_graficos(db, id_ciclo:int):
                 .all()
             )
             print(f"Cantidad Filas de registros en BDD: {len(temp_producto)}")
-            general["temp_producto_max"] = obtener_valor_sensores(db,id_ciclo, sensor.id, "MAX")
-            general["temp_producto_min"] = obtener_valor_sensores(db,id_ciclo, sensor.id, "MIN")
+            general["temp_ingreso_max"] = obtener_valor_sensores(db,id_ciclo, sensor.id, "MAX")
+            general["temp_ingreso_min"] = obtener_valor_sensores(db,id_ciclo, sensor.id, "MIN")
             lista_sensores_data[sensor.nombre] = temp_producto
         if sensor.nombre == "Nivel agua":
             nivel_agua = (

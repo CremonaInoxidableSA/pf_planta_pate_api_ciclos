@@ -704,7 +704,7 @@ def main():
             update_alarmas_l2(alarmas_l2_nodes, alarmas_l2_state)
 
 
-            for nodes, sim_state in zip(cocina_l1_nodes, cocina_states[:3]):
+            for nodes, sim_state in zip(cocina_l1_nodes, cocina_states[:40]):
                 update_cocina(nodes, sim_state)
 
             #for nodes, sim_state in zip(enfriador_l1_nodes, enfriador_states[:4]):
