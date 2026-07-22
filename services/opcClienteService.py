@@ -1,5 +1,7 @@
 from sqlalchemy.orm import Session
 from datetime import datetime
+from collections import defaultdict, deque
+from statistics import mean
 from models.ciclo import Ciclo
 from models.receta import Receta
 from models.sensoresAA import SensoresAA
@@ -10,6 +12,8 @@ import os
 import json
 import logging
 import asyncio
+import math
+import threading
 import ua
 
 from config.db import get_db
@@ -86,6 +90,20 @@ AA_SENSOR_MAP: dict[str, int] = {
     "niv_agua":     5,
 }
 
+# Los cuatro sensores permanecen juntos en cada registro JSONL. El filtrado
+# termico solo usa estos tres nombres, sin modificar AA_SENSOR_MAP.
+CAMPOS_TEMPERATURA = ("temp_agua", "temp_ingreso", "temp_prod")
+CAMPOS_HISTORIAL = (
+    "id_historial", "tiempo", "estado", "idCiclo", "lote",
+    "temp_agua", "temp_ingreso", "temp_prod", "niv_agua",
+)
+
+UMBRAL_CAMBIO = 0.5
+VENTANA_PROMEDIO_SEGUNDOS = 10
+PERSISTENCIA_REQUERIDA = 3
+TIEMPO_MAXIMO_SEGUNDOS = 300
+HISTORIAL_PREVIEW_MAX = 100
+
 
 # -----------------------------------------------------------------------
 # Helpers puros (sin estado de clase)
@@ -93,18 +111,31 @@ AA_SENSOR_MAP: dict[str, int] = {
 
 def datetime_to_string(obj):
     if isinstance(obj, datetime):
-        return obj.isoformat()
+        return obj.strftime("%Y-%m-%d %H:%M:%S")
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
-def limpiar_archivo_json(archivo: str):
+def _numero_finito_o_none(valor):
+    """Normaliza lecturas OPC numericas; cero siempre es un valor valido."""
+    if valor is None or isinstance(valor, bool):
+        return valor
     try:
-        if os.path.exists(archivo):
-            with open(archivo, "w") as f:
-                json.dump([], f)
-            logger.info(f"Historial JSON limpiado: {archivo}")
-    except Exception as e:
-        logger.error(f"Error al limpiar {archivo}: {e}")
+        numero = float(valor)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numero):
+        return None
+    if isinstance(valor, int):
+        return valor
+    return numero
+
+
+def _redondear_para_presentacion(valor):
+    """Formato visual compatible con el frontend; nunca se guarda en JSONL."""
+    numero = _numero_finito_o_none(valor)
+    if numero is None or isinstance(numero, bool):
+        return "Sin registro"
+    return round(float(numero), 1)
 
 
 def _parse_tiempo(s: str) -> datetime:
@@ -142,7 +173,13 @@ def _construir_tramos_estado(historial: list) -> list[dict]:
     if not historial:
         return []
 
-    ordenado = sorted(historial, key=lambda r: r.get("tiempo", ""))
+    ordenado = sorted(
+        historial,
+        key=lambda r: (
+            r.get("tiempo", ""),
+            int(r.get("id_historial") or 0),
+        ),
+    )
 
     nombre_actual = ordenado[0]["estado"]
     inicio_actual = _parse_tiempo(ordenado[0]["tiempo"])
@@ -196,7 +233,6 @@ class ObtenerNodosOpcUA:
 
     def __init__(self, conexion_servidor):
         self.conexion_servidor  = conexion_servidor
-        self.estados_anteriores: dict = {}
         self.session = next(get_db())
 
         self._equipos: list[dict] = []
@@ -218,9 +254,34 @@ class ObtenerNodosOpcUA:
         # ---------------------------------------------------------------
         self._io_state: dict[str, dict[str, dict]] = {}
 
+        # Estado JSONL. Cada archivo tiene su propio lock, contador y preview.
+        # El directorio puede montarse en un volumen persistente de Docker con
+        # OPC_HISTORIAL_DIR=/ruta/del/volumen.
+        self._jsonl_dir = os.path.abspath(
+            os.getenv("OPC_HISTORIAL_DIR", "data/opc_historial")
+        )
+        self._jsonl_fsync = os.getenv("OPC_JSONL_FSYNC", "0") == "1"
+        self._jsonl_locks: dict[str, threading.RLock] = defaultdict(
+            threading.RLock
+        )
+        self._jsonl_meta_lock = threading.RLock()
+        self._jsonl_loaded: set[str] = set()
+        self._jsonl_next_id: dict[str, int] = {}
+        self._jsonl_preview: dict[str, deque] = {}
+        self._jsonl_first_time: dict[str, str] = {}
+        self._jsonl_last_time: dict[str, str] = {}
+        self._jsonl_last_record: dict[str, dict] = {}
+
+        os.makedirs(self._jsonl_dir, exist_ok=True)
+        self._informar_archivos_pendientes()
+
     def __del__(self):
-        if hasattr(self, "session"):
-            self.session.close()
+        session = getattr(self, "session", None)
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
 
     # -----------------------------------------------------------------------
     # Navegación del árbol OPC
@@ -353,8 +414,8 @@ class ObtenerNodosOpcUA:
         self._equipos         = []
         self._recetario_cache = {}
         self._pf_l1_node      = None
-        # Descartar tramos IO en memoria: los nodos OPC anteriores son invalidos
-        self._io_state        = {}
+        # _io_state no contiene objetos Node, solo valores y fechas. Se conserva
+        # en una reconexion para no perder el tramo abierto antes del corte OPC.
 
         def _setup():
             root_node = self.conexion_servidor.client.get_root_node()
@@ -401,42 +462,485 @@ class ObtenerNodosOpcUA:
             return str(estado_raw).strip().upper()
         return self.ESTADOS_EQUIPO_MAP.get(estado_raw, f"DESCONOCIDO_{estado_raw}")
 
-    def _archivo_historial(self, linea, tipo, numero_local):
+    def _slugs_equipo(self, linea, tipo, numero_local):
         linea_slug = "l1" if linea == "PF-L1" else "l2"
-        tipo_slug  = "cocina" if tipo == "COCINA" else "enfriador"
-        return f"{tipo_slug}_{numero_local}_{linea_slug}.json"
+        tipo_slug = "cocina" if tipo == "COCINA" else "enfriador"
+        return linea_slug, tipo_slug, int(numero_local)
 
-    def _cargar_historial_json(self, archivo):
+    def _directorio_historial(self, linea, tipo, numero_local):
+        linea_slug, tipo_slug, numero = self._slugs_equipo(
+            linea, tipo, numero_local
+        )
+        return os.path.join(
+            self._jsonl_dir,
+            f"{linea_slug}_{tipo_slug}_{numero}",
+        )
+
+    def _archivo_historial(self, linea, tipo, numero_local, id_ciclo):
+        directorio = self._directorio_historial(linea, tipo, numero_local)
+        return os.path.join(directorio, f"ciclo_{int(id_ciclo)}.jsonl")
+
+    def _archivo_legacy(self, linea, tipo, numero_local):
+        linea_slug, tipo_slug, numero = self._slugs_equipo(
+            linea, tipo, numero_local
+        )
+        return f"{tipo_slug}_{numero}_{linea_slug}.json"
+
+    def _informar_archivos_pendientes(self):
+        pendientes = []
+        en_proceso = []
+        for raiz, _, archivos in os.walk(self._jsonl_dir):
+            for nombre in archivos:
+                ruta = os.path.join(raiz, nombre)
+                if nombre.endswith(".jsonl"):
+                    pendientes.append(ruta)
+                elif nombre.endswith(".processing"):
+                    en_proceso.append(ruta)
+        if pendientes:
+            logger.warning(
+                "[JSONL] Se detectaron %s archivos pendientes de ciclos.",
+                len(pendientes),
+            )
+        if en_proceso:
+            logger.warning(
+                "[JSONL] Se detectaron %s archivos .processing; "
+                "se reintentaran al procesar el equipo.",
+                len(en_proceso),
+            )
+
+    def _validar_registro_jsonl(self, registro, archivo, numero_linea=None):
+        contexto = f"Archivo={archivo}"
+        if numero_linea is not None:
+            contexto += f" Linea={numero_linea}"
+        if not isinstance(registro, dict):
+            raise ValueError(f"{contexto}: el registro no es un objeto JSON")
+
+        faltantes = [campo for campo in CAMPOS_HISTORIAL if campo not in registro]
+        if faltantes:
+            raise ValueError(f"{contexto}: faltan campos {faltantes}")
+
         try:
-            if os.path.exists(archivo) and os.path.getsize(archivo) > 0:
+            id_historial = int(registro["id_historial"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{contexto}: id_historial invalido") from exc
+        if id_historial <= 0:
+            raise ValueError(f"{contexto}: id_historial debe ser positivo")
+
+        tiempo = registro.get("tiempo")
+        try:
+            fecha = _parse_tiempo(tiempo)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{contexto}: tiempo debe respetar YYYY-MM-DD HH:MM:SS"
+            ) from exc
+        if fecha.strftime("%Y-%m-%d %H:%M:%S") != tiempo:
+            raise ValueError(f"{contexto}: formato de tiempo no canonico")
+
+        try:
+            id_ciclo = int(registro["idCiclo"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{contexto}: idCiclo invalido") from exc
+
+        limpio = {
+            "id_historial": id_historial,
+            "tiempo": tiempo,
+            "estado": str(registro.get("estado") or "").strip().upper(),
+            "idCiclo": id_ciclo,
+            "lote": str(registro.get("lote") or "").strip(),
+            "temp_agua": _numero_finito_o_none(registro.get("temp_agua")),
+            "temp_ingreso": _numero_finito_o_none(
+                registro.get("temp_ingreso")
+            ),
+            "temp_prod": _numero_finito_o_none(registro.get("temp_prod")),
+            "niv_agua": _numero_finito_o_none(registro.get("niv_agua")),
+        }
+        return limpio
+
+    def _iterar_historial_jsonl(
+        self,
+        archivo,
+        tolerar_ultima_incompleta=True,
+    ):
+        """Lee y valida JSONL sin cargar el archivo completo en memoria."""
+        if not archivo or not os.path.exists(archivo):
+            return
+
+        ultimo_id = 0
+        with open(archivo, "r", encoding="utf-8", newline="") as f:
+            for numero_linea, linea_original in enumerate(f, start=1):
+                linea = linea_original.strip()
+                if not linea:
+                    continue
                 try:
-                    with open(archivo, "r") as f:
-                        return json.load(f)
-                except json.JSONDecodeError:
-                    logger.error(f"JSON invalido en {archivo}, se limpia.")
-                    limpiar_archivo_json(archivo)
-                    return []
-            return []
-        except Exception as e:
-            logger.error(f"Error al cargar {archivo}: {e}")
-            return []
+                    registro = json.loads(linea)
+                except json.JSONDecodeError as exc:
+                    ultima_incompleta = (
+                        tolerar_ultima_incompleta
+                        and not linea_original.endswith(("\n", "\r"))
+                    )
+                    if ultima_incompleta:
+                        logger.warning(
+                            "[JSONL] Ultima linea incompleta ignorada. "
+                            "Archivo=%s Linea=%s",
+                            archivo,
+                            numero_linea,
+                        )
+                        break
+                    raise ValueError(
+                        f"Archivo={archivo} Linea={numero_linea}: JSON invalido"
+                    ) from exc
 
-    def _guardar_historial_json(self, archivo, historial):
-        try:
-            with open(archivo, "w") as f:
-                json.dump(historial, f, indent=2, default=datetime_to_string)
-        except Exception as e:
-            logger.error(f"Error guardando historial en {archivo}: {e}")
+                registro = self._validar_registro_jsonl(
+                    registro, archivo, numero_linea
+                )
+                esperado = ultimo_id + 1
+                if registro["id_historial"] != esperado:
+                    raise ValueError(
+                        f"Archivo={archivo} Linea={numero_linea}: "
+                        f"id_historial={registro['id_historial']} "
+                        f"pero se esperaba {esperado}"
+                    )
+                ultimo_id = registro["id_historial"]
+                yield registro
 
-    def calcular_tiempo_transcurrido_json(self, historial_actual):
+    def _reparar_ultima_linea_jsonl(self, archivo):
+        """
+        Antes de reanudar un archivo activo, separa una ultima linea parcial.
+        Los bytes incompletos quedan en un .partial recuperable y las lineas
+        validas anteriores permanecen intactas.
+        """
+        if not archivo.endswith(".jsonl") or not os.path.exists(archivo):
+            return
+        with open(archivo, "rb+") as f:
+            f.seek(0, os.SEEK_END)
+            tamano = f.tell()
+            if tamano == 0:
+                return
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) in (b"\n", b"\r"):
+                return
+
+            posicion = tamano
+            acumulado = b""
+            inicio_ultima = 0
+            while posicion > 0:
+                bloque = min(8192, posicion)
+                posicion -= bloque
+                f.seek(posicion)
+                acumulado = f.read(bloque) + acumulado
+                indice = acumulado.rfind(b"\n")
+                if indice >= 0:
+                    inicio_ultima = posicion + indice + 1
+                    acumulado = acumulado[indice + 1:]
+                    break
+
+            try:
+                registro = json.loads(acumulado.decode("utf-8"))
+                self._validar_registro_jsonl(registro, archivo)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                marca = datetime.now().strftime("%Y%m%d_%H%M%S")
+                parcial = f"{archivo}.{marca}.partial"
+                with open(parcial, "wb") as respaldo:
+                    respaldo.write(acumulado)
+                    respaldo.flush()
+                    if self._jsonl_fsync:
+                        os.fsync(respaldo.fileno())
+                f.seek(inicio_ultima)
+                f.truncate()
+                f.flush()
+                if self._jsonl_fsync:
+                    os.fsync(f.fileno())
+                logger.warning(
+                    "[JSONL] Ultima linea parcial separada. "
+                    "Archivo=%s Respaldo=%s",
+                    archivo,
+                    parcial,
+                )
+            else:
+                # El objeto era valido y solo faltaba el salto de linea.
+                f.seek(0, os.SEEK_END)
+                f.write(b"\n")
+                f.flush()
+                if self._jsonl_fsync:
+                    os.fsync(f.fileno())
+
+    def _cargar_estado_jsonl(self, archivo):
+        if not archivo:
+            return
+        lock = self._jsonl_locks[archivo]
+        with lock:
+            if archivo in self._jsonl_loaded:
+                return
+
+            self._reparar_ultima_linea_jsonl(archivo)
+
+            preview = deque(maxlen=HISTORIAL_PREVIEW_MAX)
+            primero = None
+            ultimo = None
+            ultimo_id = 0
+            for registro in self._iterar_historial_jsonl(archivo):
+                preview.append(registro)
+                primero = primero or registro["tiempo"]
+                ultimo = registro["tiempo"]
+                ultimo_id = registro["id_historial"]
+                self._jsonl_last_record[archivo] = registro
+
+            self._jsonl_preview[archivo] = preview
+            self._jsonl_next_id[archivo] = ultimo_id + 1
+            if primero:
+                self._jsonl_first_time[archivo] = primero
+            if ultimo:
+                self._jsonl_last_time[archivo] = ultimo
+            self._jsonl_loaded.add(archivo)
+
+    def _obtener_preview_jsonl(self, archivo):
+        if not archivo:
+            return []
+        self._cargar_estado_jsonl(archivo)
+        return list(self._jsonl_preview.get(archivo, ()))
+
+    def _ultimo_registro_del_archivo(self, archivo):
+        if not archivo:
+            return None
+        self._cargar_estado_jsonl(archivo)
+        ultimo = self._jsonl_last_record.get(archivo)
+        return dict(ultimo) if ultimo else None
+
+    def _agregar_registro_jsonl(self, archivo, registro):
+        if not archivo.endswith(".jsonl"):
+            raise ValueError(f"No se puede agregar sobre {archivo}")
+
+        lock = self._jsonl_locks[archivo]
+        with lock:
+            base = archivo[:-len(".jsonl")]
+            if os.path.exists(base + ".processing") or os.path.exists(
+                base + ".done"
+            ):
+                raise RuntimeError(
+                    f"El ciclo ya se esta cerrando o fue archivado: {archivo}"
+                )
+            self._cargar_estado_jsonl(archivo)
+            id_historial = self._jsonl_next_id.get(archivo, 1)
+            completo = dict(registro)
+            completo["id_historial"] = id_historial
+            completo = self._validar_registro_jsonl(completo, archivo)
+
+            linea = json.dumps(
+                completo,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+                default=datetime_to_string,
+            )
+
+            os.makedirs(os.path.dirname(archivo), exist_ok=True)
+            with open(archivo, "a", encoding="utf-8", newline="\n") as f:
+                f.write(linea)
+                f.write("\n")
+                f.flush()
+                if self._jsonl_fsync:
+                    os.fsync(f.fileno())
+
+            preview = self._jsonl_preview.setdefault(
+                archivo, deque(maxlen=HISTORIAL_PREVIEW_MAX)
+            )
+            preview.append(completo)
+            self._jsonl_next_id[archivo] = id_historial + 1
+            self._jsonl_first_time.setdefault(archivo, completo["tiempo"])
+            self._jsonl_last_time[archivo] = completo["tiempo"]
+            self._jsonl_last_record[archivo] = completo
+            self._jsonl_loaded.add(archivo)
+            logger.debug(
+                "[JSONL] Archivo=%s id_historial=%s agregado",
+                archivo,
+                id_historial,
+            )
+            return completo
+
+    def _olvidar_estado_jsonl(self, *archivos):
+        with self._jsonl_meta_lock:
+            for archivo in archivos:
+                if not archivo:
+                    continue
+                self._jsonl_loaded.discard(archivo)
+                self._jsonl_next_id.pop(archivo, None)
+                self._jsonl_preview.pop(archivo, None)
+                self._jsonl_first_time.pop(archivo, None)
+                self._jsonl_last_time.pop(archivo, None)
+                self._jsonl_last_record.pop(archivo, None)
+                self._jsonl_locks.pop(archivo, None)
+
+    def _renombrar_a_processing(self, archivo):
+        if archivo.endswith(".processing"):
+            return archivo
+        if not archivo.endswith(".jsonl"):
+            raise ValueError(f"Extension de historial inesperada: {archivo}")
+
+        destino = archivo[:-len(".jsonl")] + ".processing"
+        lock = self._jsonl_locks[archivo]
+        with lock:
+            if not os.path.exists(archivo):
+                if os.path.exists(destino):
+                    return destino
+                raise FileNotFoundError(archivo)
+            if os.path.exists(destino):
+                raise FileExistsError(
+                    f"Ya existe un procesamiento pendiente: {destino}"
+                )
+            os.replace(archivo, destino)
+        self._olvidar_estado_jsonl(archivo, destino)
+        return destino
+
+    def _archivar_jsonl(self, archivo_processing):
+        base = (
+            archivo_processing[:-len(".processing")]
+            if archivo_processing.endswith(".processing")
+            else os.path.splitext(archivo_processing)[0]
+        )
+        destino = base + ".done"
+        if os.path.exists(destino):
+            marca = datetime.now().strftime("%Y%m%d_%H%M%S")
+            destino = f"{base}_{marca}.done"
+        os.replace(archivo_processing, destino)
+        self._olvidar_estado_jsonl(archivo_processing, destino)
+        logger.info("[JSONL] Archivo procesado archivado: %s", destino)
+        return destino
+
+    def _migrar_json_legacy(self, linea, tipo, numero_local):
+        legacy = self._archivo_legacy(linea, tipo, numero_local)
+        if not os.path.exists(legacy) or os.path.getsize(legacy) == 0:
+            return
         try:
-            if not historial_actual or len(historial_actual) < 2:
-                return "00:00:00"
-            t0 = _parse_tiempo(historial_actual[0]["tiempo"])
-            t1 = _parse_tiempo(historial_actual[-1]["tiempo"])
-            return _delta_str(t0, t1)
-        except Exception:
+            with open(legacy, "r", encoding="utf-8") as f:
+                historial = json.load(f)
+            if not isinstance(historial, list):
+                raise ValueError("el JSON anterior no contiene un arreglo")
+            if not historial:
+                destino_vacio = legacy + ".migrated"
+                if os.path.exists(destino_vacio):
+                    marca = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    destino_vacio = f"{destino_vacio}_{marca}"
+                if not os.path.exists(destino_vacio):
+                    os.replace(legacy, destino_vacio)
+                return
+
+            ciclos_legacy = {int(fila["idCiclo"]) for fila in historial}
+            if len(ciclos_legacy) != 1:
+                raise ValueError(
+                    f"el JSON anterior mezcla ciclos: {sorted(ciclos_legacy)}"
+                )
+            id_ciclo = ciclos_legacy.pop()
+            destino = self._archivo_historial(
+                linea, tipo, numero_local, id_ciclo
+            )
+            if os.path.exists(destino):
+                logger.warning(
+                    "[JSONL] No se migra %s porque ya existe %s",
+                    legacy,
+                    destino,
+                )
+                return
+
+            os.makedirs(os.path.dirname(destino), exist_ok=True)
+            temporal = destino + ".migrating"
+            esperado = 1
+            with open(temporal, "w", encoding="utf-8", newline="\n") as f:
+                for numero_linea, fila in enumerate(historial, start=1):
+                    limpio = self._validar_registro_jsonl(
+                        fila, legacy, numero_linea
+                    )
+                    if limpio["id_historial"] != esperado:
+                        raise ValueError(
+                            f"id_historial discontinuo en {legacy}: "
+                            f"esperado={esperado}"
+                        )
+                    esperado += 1
+                    f.write(json.dumps(
+                        limpio,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ))
+                    f.write("\n")
+                f.flush()
+                if self._jsonl_fsync:
+                    os.fsync(f.fileno())
+            os.replace(temporal, destino)
+            respaldo_legacy = legacy + ".migrated"
+            if os.path.exists(respaldo_legacy):
+                marca = datetime.now().strftime("%Y%m%d_%H%M%S")
+                respaldo_legacy = f"{respaldo_legacy}_{marca}"
+            os.replace(legacy, respaldo_legacy)
+            logger.warning(
+                "[JSONL] Historial anterior migrado: %s -> %s",
+                legacy,
+                destino,
+            )
+        except Exception as exc:
+            logger.error(
+                "[JSONL] No se pudo migrar historial anterior %s: %s",
+                legacy,
+                exc,
+            )
+            raise
+
+    def _buscar_historial_pendiente(self, linea, tipo, numero_local):
+        self._migrar_json_legacy(linea, tipo, numero_local)
+        directorio = self._directorio_historial(linea, tipo, numero_local)
+        if not os.path.isdir(directorio):
+            return None
+
+        nombres = os.listdir(directorio)
+        processing = [
+            os.path.join(directorio, n)
+            for n in nombres
+            if n.endswith(".processing")
+        ]
+        activos = [
+            os.path.join(directorio, n)
+            for n in nombres
+            if n.endswith(".jsonl")
+        ]
+        candidatos = processing or activos
+        if not candidatos:
+            return None
+        candidatos.sort(key=os.path.getmtime, reverse=True)
+        if len(candidatos) > 1 or (processing and activos):
+            logger.error(
+                "[JSONL] Hay varios historiales pendientes para %s/%s/%s: %s",
+                linea,
+                tipo,
+                numero_local,
+                processing + activos,
+            )
+            raise RuntimeError("Mas de un historial pendiente para el equipo")
+        return candidatos[0]
+
+    def calcular_tiempo_transcurrido_jsonl(self, archivo):
+        if not archivo:
             return "00:00:00"
+        try:
+            self._cargar_estado_jsonl(archivo)
+            inicio = self._jsonl_first_time.get(archivo)
+            fin = self._jsonl_last_time.get(archivo)
+            if not inicio or not fin:
+                return "00:00:00"
+            return _delta_str(_parse_tiempo(inicio), _parse_tiempo(fin))
+        except Exception as exc:
+            logger.error(
+                "[JSONL] Error calculando tiempo de %s: %s", archivo, exc
+            )
+            return "00:00:00"
+
+    @staticmethod
+    def _historial_para_websocket(historial):
+        presentacion = []
+        for registro in historial:
+            fila = dict(registro)
+            for campo in CAMPOS_TEMPERATURA:
+                fila[campo] = _redondear_para_presentacion(fila.get(campo))
+            presentacion.append(fila)
+        return presentacion
 
     # -----------------------------------------------------------------------
     # Saneamiento del historial por cambio de lote
@@ -444,7 +948,7 @@ class ObtenerNodosOpcUA:
 
     def _lote_del_historial(self, historial: list) -> str:
         """
-        Devuelve el campo 'lote' de la última fila del historial JSON,
+        Devuelve el campo 'lote' de la última fila del historial,
         o cadena vacía si el historial está vacío o no tiene ese campo.
         """
         if not historial:
@@ -464,7 +968,7 @@ class ObtenerNodosOpcUA:
         numero_local:      int,
     ) -> list:
         """
-        Verifica si el historial JSON corresponde al lote que el OPC informa
+        Verifica si el historial JSONL corresponde al lote que el OPC informa
         ahora. Si hay discrepancia, cierra el ciclo colgado con
         finalizar_ciclo_completo() y devuelve [] para iniciar uno nuevo.
 
@@ -483,6 +987,33 @@ class ObtenerNodosOpcUA:
         """
         if not historial:
             return historial
+
+        # Un .processing indica que un cierre anterior no termino. Antes de
+        # permitir nuevas capturas se reintenta el cierre idempotente.
+        if archivo_historial.endswith(".processing"):
+            ultimo = historial[-1]
+            id_ciclo_pendiente = ultimo.get("idCiclo")
+            if not id_ciclo_pendiente:
+                raise RuntimeError(
+                    f"Archivo .processing sin idCiclo: {archivo_historial}"
+                )
+            estado_json = ultimo.get("estado", "CANCELADO")
+            estado_cierre = (
+                estado_json
+                if estado_json in self.ESTADOS_FIN
+                else "CANCELADO"
+            )
+            if not self.finalizar_ciclo_completo(
+                id_ciclo=id_ciclo_pendiente,
+                estado_maquina=estado_cierre,
+                archivo_historial=archivo_historial,
+                equipo_key=equipo_key,
+                tipo=tipo,
+            ):
+                raise RuntimeError(
+                    f"No se pudo recuperar {archivo_historial}"
+                )
+            return []
 
         lote_json = self._lote_del_historial(historial)
 
@@ -519,7 +1050,6 @@ class ObtenerNodosOpcUA:
             ok = self.finalizar_ciclo_completo(
                 id_ciclo          = id_ciclo_viejo,
                 estado_maquina    = estado_cierre,
-                historial         = historial,
                 archivo_historial = archivo_historial,
                 equipo_key        = equipo_key,
                 tipo              = tipo,
@@ -530,19 +1060,15 @@ class ObtenerNodosOpcUA:
                     f"{id_ciclo_viejo} cerrado con estado '{estado_cierre}'."
                 )
             else:
-                # finalizar_ciclo_completo ya logueó el error;
-                # de todas formas limpiamos el JSON para no seguir acumulando.
-                logger.warning(
-                    f"[{linea}/{tipo}/{numero_local}] No se pudo cerrar "
-                    f"el ciclo colgado {id_ciclo_viejo}. Se descarta el JSON igual."
+                raise RuntimeError(
+                    f"No se pudo cerrar el ciclo colgado {id_ciclo_viejo}; "
+                    "el JSONL se conserva y el equipo queda bloqueado"
                 )
-                limpiar_archivo_json(archivo_historial)
         else:
-            logger.warning(
-                f"[{linea}/{tipo}/{numero_local}] Historial colgado sin idCiclo. "
-                f"Se descarta el JSON sin persistir."
+            raise RuntimeError(
+                f"[{linea}/{tipo}/{numero_local}] Historial pendiente sin "
+                "idCiclo; no se descarta automaticamente"
             )
-            limpiar_archivo_json(archivo_historial)
 
         return []
 
@@ -747,7 +1273,8 @@ class ObtenerNodosOpcUA:
         return IO_SENSOR_MAP_COCINA if tipo == "COCINA" else IO_SENSOR_MAP_ENFRIADOR
 
     def _persistir_tramo_io(self, id_ciclo: int, id_sensor: int, valor: bool,
-                             fecha_inicio: datetime, fecha_fin: datetime):
+                             fecha_inicio: datetime, fecha_fin: datetime,
+                             confirmar: bool = True) -> bool:
         """
         Inserta un tramo IO en BD.
         Idempotente: la unicidad se verifica por (idCiclo, idSensor, fechaInicio).
@@ -759,7 +1286,7 @@ class ObtenerNodosOpcUA:
                 fechaInicio=fecha_inicio,
             ).first()
             if existe:
-                return
+                return True
             self.session.add(SensoresIO(
                 idSensor    = id_sensor,
                 valor       = valor,
@@ -767,13 +1294,20 @@ class ObtenerNodosOpcUA:
                 fechaFin    = fecha_fin,
                 idCiclo     = id_ciclo,
             ))
-            self.session.commit()
+            if confirmar:
+                self.session.commit()
+            else:
+                self.session.flush()
+            return True
         except Exception as e:
             self.session.rollback()
             logger.error(
                 f"Error persistiendo tramo IO "
                 f"(ciclo={id_ciclo}, sensor={id_sensor}): {e}"
             )
+            if not confirmar:
+                raise
+            return False
 
     def _actualizar_io_state(self, equipo_key: str, tipo: str, datos: dict,
                               id_ciclo: int, ahora: datetime):
@@ -813,10 +1347,12 @@ class ObtenerNodosOpcUA:
 
                 if tramo["id_ciclo"] != id_ciclo:
                     # Ciclo nuevo: cerrar tramo del ciclo anterior inmediatamente
-                    self._persistir_tramo_io(
+                    persistido = self._persistir_tramo_io(
                         tramo["id_ciclo"], id_sensor,
                         tramo["valor"], tramo["inicio"], ahora,
                     )
+                    if not persistido:
+                        continue
                     estado_equipo[campo] = {
                         "valor":    valor,
                         "inicio":   ahora,
@@ -824,10 +1360,12 @@ class ObtenerNodosOpcUA:
                     }
                 elif tramo["valor"] != valor:
                     # Valor cambio: cerrar tramo actual y abrir nuevo
-                    self._persistir_tramo_io(
+                    persistido = self._persistir_tramo_io(
                         id_ciclo, id_sensor,
                         tramo["valor"], tramo["inicio"], ahora,
                     )
+                    if not persistido:
+                        continue
                     estado_equipo[campo] = {
                         "valor":    valor,
                         "inicio":   ahora,
@@ -836,7 +1374,8 @@ class ObtenerNodosOpcUA:
                 # Valor igual y mismo ciclo: no hacer nada
 
     def _cerrar_io_tramos_equipo(self, equipo_key: str, tipo: str,
-                                  id_ciclo: int, fecha_fin: datetime):
+                                  id_ciclo: int, fecha_fin: datetime,
+                                  limpiar_estado: bool = True):
         """
         Al finalizar el ciclo: persiste todos los tramos IO abiertos en
         memoria para este equipo y limpia el estado.
@@ -857,17 +1396,186 @@ class ObtenerNodosOpcUA:
             self._persistir_tramo_io(
                 id_ciclo, id_sensor,
                 tramo["valor"], tramo["inicio"], fecha_fin,
+                confirmar=False,
             )
 
-        self._io_state.pop(equipo_key, None)
+        if limpiar_estado:
+            self._io_state.pop(equipo_key, None)
 
     # -----------------------------------------------------------------------
     # SensoresAA — persistencia historica al cierre del ciclo
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _orden_historial(fila):
+        return (
+            fila.get("tiempo", ""),
+            int(fila.get("id_historial") or 0),
+        )
+
+    def _agrupar_temperaturas_por_segundo(self, historial):
+        """
+        Reduce las capturas que comparten segundo a una fila representativa.
+        Las tres temperaturas se promedian; NIVEL_AGUA conserva el ultimo
+        valor valido. La fila mantiene los cuatro sensores juntos.
+        """
+        grupos = defaultdict(list)
+        for fila in sorted(historial, key=self._orden_historial):
+            grupos[fila["tiempo"]].append(fila)
+
+        resultado = []
+        for tiempo in sorted(grupos, key=_parse_tiempo):
+            filas = sorted(
+                grupos[tiempo],
+                key=lambda r: int(r.get("id_historial") or 0),
+            )
+            representativa = dict(filas[-1])
+
+            for campo in CAMPOS_TEMPERATURA:
+                valores = [
+                    _numero_finito_o_none(fila.get(campo))
+                    for fila in filas
+                ]
+                valores = [
+                    float(valor)
+                    for valor in valores
+                    if valor is not None and not isinstance(valor, bool)
+                ]
+                representativa[campo] = mean(valores) if valores else None
+
+            niveles = [
+                _numero_finito_o_none(fila.get("niv_agua"))
+                for fila in reversed(filas)
+            ]
+            representativa["niv_agua"] = next(
+                (valor for valor in niveles if valor is not None),
+                None,
+            )
+            resultado.append(representativa)
+        return resultado
+
+    def _filtrar_historial_para_bd(self, historial):
+        """
+        Filtra al finalizar el ciclo.
+
+        - Temperaturas: promedio por segundo + ventana movil de 10 segundos,
+          umbral de 0.5, tres confirmaciones y muestra maxima cada 300 s.
+        - NIVEL_AGUA: conserva una fila al primer valor y en cada cambio.
+        - La seleccion final es la union de ambos criterios y cada fila siempre
+          conserva temp_agua, temp_ingreso, temp_prod y niv_agua.
+        """
+        if not historial:
+            return []
+
+        crudo = sorted(historial, key=self._orden_historial)
+        por_segundo = self._agrupar_temperaturas_por_segundo(crudo)
+        resumen_por_tiempo = {fila["tiempo"]: fila for fila in por_segundo}
+        seleccionados: dict[int, dict] = {}
+
+        # NIVEL_AGUA se evalua sobre cada captura para no perder dos cambios
+        # ocurridos dentro del mismo segundo.
+        ultimo_nivel = None
+        nivel_inicializado = False
+        for fila in crudo:
+            nivel = _numero_finito_o_none(fila.get("niv_agua"))
+            if nivel is None:
+                continue
+            if not nivel_inicializado or nivel != ultimo_nivel:
+                candidata = dict(fila)
+                promedio_segundo = resumen_por_tiempo.get(fila["tiempo"], {})
+                for campo in CAMPOS_TEMPERATURA:
+                    candidata[campo] = promedio_segundo.get(
+                        campo, candidata.get(campo)
+                    )
+                seleccionados[candidata["id_historial"]] = candidata
+                ultimo_nivel = nivel
+                nivel_inicializado = True
+
+        ventanas = {
+            campo: deque(maxlen=VENTANA_PROMEDIO_SEGUNDOS)
+            for campo in CAMPOS_TEMPERATURA
+        }
+        referencias = {campo: None for campo in CAMPOS_TEMPERATURA}
+        persistencias = {campo: 0 for campo in CAMPOS_TEMPERATURA}
+        ultimas_fechas = {campo: None for campo in CAMPOS_TEMPERATURA}
+
+        for fila in por_segundo:
+            fecha = _parse_tiempo(fila["tiempo"])
+            promedios_moviles = {}
+            sensores_disparados = []
+
+            for campo in CAMPOS_TEMPERATURA:
+                valor = _numero_finito_o_none(fila.get(campo))
+                if valor is None or isinstance(valor, bool):
+                    persistencias[campo] = 0
+                    continue
+
+                ventanas[campo].append(float(valor))
+                if len(ventanas[campo]) < VENTANA_PROMEDIO_SEGUNDOS:
+                    continue
+
+                promedio_actual = mean(ventanas[campo])
+                promedios_moviles[campo] = promedio_actual
+                referencia = referencias[campo]
+
+                guardar = False
+                if referencia is None:
+                    guardar = True
+                elif (
+                    ultimas_fechas[campo] is not None
+                    and (fecha - ultimas_fechas[campo]).total_seconds()
+                    >= TIEMPO_MAXIMO_SEGUNDOS
+                ):
+                    guardar = True
+                elif abs(promedio_actual - referencia) >= UMBRAL_CAMBIO:
+                    persistencias[campo] += 1
+                    guardar = (
+                        persistencias[campo] >= PERSISTENCIA_REQUERIDA
+                    )
+                else:
+                    persistencias[campo] = 0
+
+                if guardar:
+                    sensores_disparados.append(campo)
+                    referencias[campo] = promedio_actual
+                    ultimas_fechas[campo] = fecha
+                    persistencias[campo] = 0
+
+            if sensores_disparados:
+                candidata = dict(fila)
+                # Se guardan los promedios moviles disponibles de las tres
+                # temperaturas, aunque el disparo sea de una sola.
+                for campo, promedio in promedios_moviles.items():
+                    candidata[campo] = promedio
+                existente = seleccionados.get(candidata["id_historial"])
+                if existente:
+                    existente.update({
+                        campo: candidata[campo]
+                        for campo in CAMPOS_TEMPERATURA
+                    })
+                else:
+                    seleccionados[candidata["id_historial"]] = candidata
+
+        # Un ciclo corto o sin NIVEL_AGUA no debe perder todos sus datos.
+        if not seleccionados and por_segundo:
+            seleccionados[por_segundo[-1]["id_historial"]] = dict(
+                por_segundo[-1]
+            )
+
+        resultado = sorted(
+            seleccionados.values(),
+            key=self._orden_historial,
+        )
+        logger.info(
+            "[PROCESAMIENTO] Registros_crudos=%s Registros_filtrados=%s",
+            len(historial),
+            len(resultado),
+        )
+        return resultado
+
     def _persistir_sensores_aa(self, id_ciclo: int, historial: list) -> bool:
         """
-        Inserta en SensoresAA todas las muestras del historial JSON.
+        Inserta en SensoresAA las muestras filtradas obtenidas del JSONL.
         Idempotente: si ya existen filas para este id_ciclo, no inserta nada.
         Usa flush (sin commit) para participar en la transaccion del cierre.
 
@@ -886,14 +1594,11 @@ class ObtenerNodosOpcUA:
             if not historial:
                 return True
 
-            ordenado = sorted(historial, key=lambda r: r.get("tiempo", ""))
+            ordenado = sorted(historial, key=self._orden_historial)
             objetos  = []
 
             for fila in ordenado:
-                try:
-                    fecha = _parse_tiempo(fila["tiempo"])
-                except Exception:
-                    continue  # Timestamp invalido: ignorar fila
+                fecha = _parse_tiempo(fila["tiempo"])
 
                 for campo_json, id_sensor in AA_SENSOR_MAP.items():
                     valor = fila.get(campo_json)
@@ -903,6 +1608,9 @@ class ObtenerNodosOpcUA:
                         valor_float = float(valor)
                     except (TypeError, ValueError):
                         continue
+
+                    if not math.isfinite(valor_float):
+                        continue
                     objetos.append(SensoresAA(
                         idSensor      = id_sensor,
                         valor         = valor_float,
@@ -910,7 +1618,8 @@ class ObtenerNodosOpcUA:
                         fechaRegistro = fecha,
                     ))
 
-            self.session.bulk_save_objects(objetos)
+            if objetos:
+                self.session.bulk_save_objects(objetos)
             self.session.flush()
             logger.info(
                 f"SensoresAA: {len(objetos)} filas preparadas "
@@ -981,7 +1690,6 @@ class ObtenerNodosOpcUA:
         self,
         id_ciclo:          int,
         estado_maquina:    str,
-        historial:         list,
         archivo_historial: str,
         equipo_key:        str,
         tipo:              str,
@@ -990,39 +1698,54 @@ class ObtenerNodosOpcUA:
         Cierre completo y atomico de un ciclo.
 
         Pasos en orden:
-          1. Verificar que el ciclo existe en BD y no esta ya cerrado.
-          2. Construir tramos de estado desde el historial JSON.
-          3. Corregir el ultimo tramo para que cierre con la fecha_fin real.
-          4. Calcular cantidadPausas (tramos con nombre == "PAUSADO").
-          5. _persistir_sensores_aa  (flush, sin commit aun)
-          6. _persistir_estados_ciclo (flush, sin commit aun)
-          7. _cerrar_io_tramos_equipo (commit propio por senal)
-          8. Actualizar Ciclo.
-          9. COMMIT unico de los pasos 5, 6 y 8.
-         10. Limpiar historial JSON SOLO despues del commit exitoso.
+          1. Renombrar atomica y exclusivamente a .processing.
+          2. Leer y validar el JSONL completo.
+          3. Filtrar temperaturas y cambios de NIVEL_AGUA.
+          4. Preparar SensoresAA, EstadoCiclo, IO y Ciclo sin commits internos.
+          5. Ejecutar un unico commit.
+          6. Archivar como .done solamente despues del commit.
 
-        Si el commit falla: ROLLBACK automatico del ORM y el JSON se conserva
-        intacto para reintentar en la siguiente deteccion del estado de fin.
+        Si algo falla se ejecuta rollback y el .processing se conserva.
 
         Returns:
             True  -> ciclo cerrado correctamente
             False -> ya estaba cerrado o hubo un error
         """
+        archivo_processing = None
         try:
+            if not archivo_historial or not os.path.exists(archivo_historial):
+                logger.warning(
+                    "[JSONL] No existe archivo para cerrar ciclo %s: %s",
+                    id_ciclo,
+                    archivo_historial,
+                )
+                return False
+
+            archivo_processing = self._renombrar_a_processing(
+                archivo_historial
+            )
+            historial = list(self._iterar_historial_jsonl(archivo_processing))
+            if not historial:
+                raise ValueError("El historial JSONL no contiene registros validos")
+
+            ciclos_en_archivo = {int(fila["idCiclo"]) for fila in historial}
+            if ciclos_en_archivo != {int(id_ciclo)}:
+                raise ValueError(
+                    f"El JSONL mezcla ciclos: esperado={id_ciclo}, "
+                    f"encontrados={sorted(ciclos_en_archivo)}"
+                )
+
             ciclo = self.session.query(Ciclo).filter_by(id=id_ciclo).first()
             if not ciclo:
                 logger.warning(f"Ciclo {id_ciclo} no encontrado en BD.")
                 return False
 
-            if ciclo.fecha_fin is not None:
-                # Ya estaba cerrado (doble disparo): solo limpiar JSON
-                logger.info(
-                    f"Ciclo {id_ciclo} ya estaba finalizado. Limpiando JSON."
-                )
-                limpiar_archivo_json(archivo_historial)
-                return True
-
-            fecha_fin = datetime.now().replace(microsecond=0)
+            ya_estaba_cerrado = ciclo.fecha_fin is not None
+            fecha_fin = (
+                ciclo.fecha_fin
+                if ya_estaba_cerrado
+                else datetime.now().replace(microsecond=0)
+            )
 
             # --- Tramos de estado -----------------------------------------
             tramos = _construir_tramos_estado(historial)
@@ -1039,11 +1762,16 @@ class ObtenerNodosOpcUA:
             cantidad_pausas = sum(1 for t in tramos if t["nombre"] == "PAUSADO")
 
             # Tiempo total
-            tiempo_transcurrido = _delta_str(ciclo.fecha_inicio, fecha_fin)
+            fecha_inicio = ciclo.fecha_inicio or _parse_tiempo(
+                historial[0]["tiempo"]
+            )
+            tiempo_transcurrido = _delta_str(fecha_inicio, fecha_fin)
 
             # --- Persistencias (flush sin commit) -------------------------
-
-            ok_aa = self._persistir_sensores_aa(id_ciclo, historial)
+            historial_filtrado = self._filtrar_historial_para_bd(historial)
+            ok_aa = self._persistir_sensores_aa(
+                id_ciclo, historial_filtrado
+            )
             if not ok_aa:
                 raise RuntimeError("Fallo _persistir_sensores_aa")
 
@@ -1051,36 +1779,47 @@ class ObtenerNodosOpcUA:
             if not ok_ec:
                 raise RuntimeError("Fallo _persistir_estados_ciclo")
 
-            # SensoresIO: cada tramo IO ya tiene su propio commit en tiempo real.
-            # Aqui solo se cierran los tramos que quedaron abiertos al finalizar.
-            self._cerrar_io_tramos_equipo(equipo_key, tipo, id_ciclo, fecha_fin)
+            # Los cambios IO anteriores se confirmaron en tiempo real. Los
+            # tramos abiertos participan ahora del mismo commit del cierre.
+            if not ya_estaba_cerrado:
+                self._cerrar_io_tramos_equipo(
+                    equipo_key,
+                    tipo,
+                    id_ciclo,
+                    fecha_fin,
+                    limpiar_estado=False,
+                )
 
             # --- Actualizar Ciclo -----------------------------------------
-            ciclo.fecha_fin          = fecha_fin
-            ciclo.estadoMaquina      = estado_maquina
-            ciclo.cantidadPausas     = cantidad_pausas
-            ciclo.tiempoTranscurrido = tiempo_transcurrido
+            if not ya_estaba_cerrado:
+                ciclo.fecha_fin          = fecha_fin
+                ciclo.estadoMaquina      = estado_maquina
+                ciclo.cantidadPausas     = cantidad_pausas
+                ciclo.tiempoTranscurrido = tiempo_transcurrido
 
-            # --- COMMIT unico (SensoresAA + EstadoCiclo + Ciclo) ----------
+            # --- COMMIT unico (SensoresAA + EstadoCiclo + IO + Ciclo) ------
             self.session.commit()
+            self._io_state.pop(equipo_key, None)
 
             logger.info(
                 f"\033[1;92m[{fecha_fin}] CICLO {id_ciclo} FINALIZADO | "
                 f"estado={estado_maquina} | pausas={cantidad_pausas} | "
                 f"tiempo={tiempo_transcurrido} | "
-                f"muestras_aa={len(historial)*len(AA_SENSOR_MAP)} | "
+                f"registros_crudos={len(historial)} | "
+                f"registros_filtrados={len(historial_filtrado)} | "
                 f"tramos_estado={len(tramos)}\033[0m"
             )
 
-            # --- Limpiar JSON SOLO tras commit exitoso --------------------
-            limpiar_archivo_json(archivo_historial)
+            # --- Archivar JSONL SOLO tras commit exitoso ------------------
+            self._archivar_jsonl(archivo_processing)
             return True
 
         except Exception as e:
             self.session.rollback()
             logger.error(
                 f"Error en finalizar_ciclo_completo (ciclo={id_ciclo}): {e}. "
-                f"Historial JSON conservado para reintento."
+                f"Historial JSONL conservado para reintento en "
+                f"{archivo_processing or archivo_historial}."
             )
             return False
 
@@ -1093,14 +1832,6 @@ class ObtenerNodosOpcUA:
             "datos-cocinas":     [],
             "datos-enfriadores": [],
         }
-        def redondear_un_decimal(valor):
-            if valor is None:
-                return "Sin registro"
-
-            try:
-                return round(float(valor), 1)
-            except (TypeError, ValueError):
-                return "Sin registro"
 
         try:
             for equipo in self._equipos:
@@ -1114,18 +1845,25 @@ class ObtenerNodosOpcUA:
 
                     estado_actual   = self._estado_a_texto(datos.get("ESTADO_EQUIPO", 0))
                     key_estado      = f"{linea}-{tipo}-{numero_local}"
-                    estado_anterior = self.estados_anteriores.get(key_estado, "")
-                    self.estados_anteriores[key_estado] = estado_actual
 
                     numero_receta = int(datos.get("NUMERO_RECETA") or 0)
                     receta_opc    = self._recetario_cache.get(numero_receta, {})
                     nombre_receta = receta_opc.get("NOMBRE", f"RECETA_{numero_receta:02}")
 
-                    archivo_historial = self._archivo_historial(linea, tipo, numero_local)
-                    historial_actual  = self._cargar_historial_json(archivo_historial)
-                    lote_ciclo        = str(datos.get("LOTE_CICLO") or "").strip()
+                    lote_ciclo = str(
+                        datos.get("LOTE_CICLO") or ""
+                    ).strip()
+                    archivo_historial = self._buscar_historial_pendiente(
+                        linea, tipo, numero_local
+                    )
+                    historial_actual = self._obtener_preview_jsonl(
+                        archivo_historial
+                    )
 
-                    if estado_actual in self.ESTADOS_CONTINUOS:
+                    if (
+                        estado_actual in self.ESTADOS_CONTINUOS
+                        and archivo_historial
+                    ):
                         historial_actual = self._sanear_historial_por_lote(
                             historial         = historial_actual,
                             lote_actual       = lote_ciclo,
@@ -1137,6 +1875,8 @@ class ObtenerNodosOpcUA:
                             tipo              = tipo,
                             numero_local      = numero_local,
                         )
+                        if not historial_actual:
+                            archivo_historial = None
 
                     # ---------------------------------------------------------
                     # Ciclo activo: guardar muestra y actualizar IO state
@@ -1152,22 +1892,44 @@ class ObtenerNodosOpcUA:
                             estado_actual    = estado_actual,
                         )
 
+                        archivo_ciclo = self._archivo_historial(
+                            linea,
+                            tipo,
+                            numero_local,
+                            id_ciclo,
+                        )
+                        if (
+                            archivo_historial
+                            and os.path.abspath(archivo_historial)
+                            != os.path.abspath(archivo_ciclo)
+                        ):
+                            raise RuntimeError(
+                                "El ciclo resuelto no coincide con el archivo "
+                                f"pendiente: ciclo={id_ciclo} "
+                                f"archivo={archivo_historial}"
+                            )
+                        archivo_historial = archivo_ciclo
+
                         # Timestamp sin microsegundos (consistencia con BD)
                         ahora = datetime.now().replace(microsecond=0)
 
                         nuevo_paso = {
-                            "id_historial": len(historial_actual) + 1,
                             "tiempo":       ahora.strftime("%Y-%m-%d %H:%M:%S"),
                             "estado":       estado_actual,
                             "idCiclo":      id_ciclo,
                             "lote":         lote_ciclo,
-                            "temp_agua":    redondear_un_decimal(datos.get("TEMP_AGUA")),
-                            "temp_ingreso": redondear_un_decimal(datos.get("TEMP_INGRESO")),
-                            "temp_prod":    redondear_un_decimal(datos.get("TEMP_PRODUCTO")),
+                            "temp_agua":    datos.get("TEMP_AGUA"),
+                            "temp_ingreso": datos.get("TEMP_INGRESO"),
+                            "temp_prod":    datos.get("TEMP_PRODUCTO"),
                             "niv_agua":     datos.get("NIVEL_AGUA"),
                         }
-                        historial_actual.append(nuevo_paso)
-                        self._guardar_historial_json(archivo_historial, historial_actual)
+                        self._agregar_registro_jsonl(
+                            archivo_historial,
+                            nuevo_paso,
+                        )
+                        historial_actual = self._obtener_preview_jsonl(
+                            archivo_historial
+                        )
 
                         # Trazabilidad IO — deteccion de cambios en tiempo real
                         self._actualizar_io_state(key_estado, tipo, datos, id_ciclo, ahora)
@@ -1175,44 +1937,66 @@ class ObtenerNodosOpcUA:
                     # ---------------------------------------------------------
                     # Transicion a estado de fin (flanco unico)
                     # ---------------------------------------------------------
-                    if estado_actual in self.ESTADOS_FIN and estado_anterior not in self.ESTADOS_FIN:
+                    if estado_actual in self.ESTADOS_FIN:
                         id_ciclo = None
-                        if historial_actual:
-                            id_ciclo = historial_actual[-1].get("idCiclo")
+                        ultimo_registro = self._ultimo_registro_del_archivo(
+                            archivo_historial
+                        )
+                        if ultimo_registro:
+                            id_ciclo = ultimo_registro.get("idCiclo")
                         if not id_ciclo:
                             ciclo_activo = self._obtener_ciclo_activo(id_equipo)
                             if ciclo_activo:
                                 id_ciclo = ciclo_activo.id
 
-                        if id_ciclo is not None:
+                        if id_ciclo is not None and archivo_historial:
                             ok = self.finalizar_ciclo_completo(
                                 id_ciclo          = id_ciclo,
                                 estado_maquina    = estado_actual,
-                                historial         = historial_actual,
                                 archivo_historial = archivo_historial,
                                 equipo_key        = key_estado,
                                 tipo              = tipo,
                             )
                             if ok:
                                 historial_actual = []
+                                archivo_historial = None
+                        elif id_ciclo is not None:
+                            ciclo_activo = self.session.query(Ciclo).filter_by(
+                                id=id_ciclo
+                            ).first()
+                            if ciclo_activo:
+                                self._cerrar_ciclo_bd(
+                                    ciclo_activo, estado_actual
+                                )
 
                     # ---------------------------------------------------------
                     # Armar payload WebSocket
                     # ---------------------------------------------------------
                     tiempo_transcurrido = (
-                        self.calcular_tiempo_transcurrido_json(historial_actual)
-                        if historial_actual else "00:00:00"
+                        self.calcular_tiempo_transcurrido_jsonl(
+                            archivo_historial
+                        )
+                        if archivo_historial else "00:00:00"
                     )
                     ultimo_ciclo = self.obtener_ultimo_ciclo_finalizado(id_equipo)
+                    historial_websocket = self._historial_para_websocket(
+                        historial_actual
+                    )
 
                     equipo_general = {
                         "tipo":               tipo,
                         "id":                 id_equipo,
                         "linea":              linea,
                         "estado":             estado_actual,
-                        "temp_prod":          redondear_un_decimal(datos.get("TEMP_PRODUCTO")),
-                        "temp_agua":          redondear_un_decimal(datos.get("TEMP_AGUA")),
-                        "temp_ingreso":       redondear_un_decimal(datos.get("TEMP_INGRESO")),
+                        "temp_agua":          _redondear_para_presentacion(
+                            datos.get("TEMP_AGUA")
+                        ),
+                        "temp_prod":          _redondear_para_presentacion(
+                            datos.get("TEMP_PRODUCTO")
+                        ),
+                        "temp_ingreso":       _redondear_para_presentacion(
+                            datos.get("TEMP_INGRESO")
+                        ),
                         "niv_agua":           datos.get("NIVEL_AGUA"),
                         "receta":             nombre_receta,
                         "receta_paso_actual": datos.get("PASO_ACTUAL"),
@@ -1238,7 +2022,7 @@ class ObtenerNodosOpcUA:
                                 "vapor_vivo":           datos.get("VAPOR_VIVO"),
                                 "vapor_vivo_acc":       datos.get("VAPOR_VIVO_ACC"),
                             }],
-                            "historial": historial_actual,
+                            "historial": historial_websocket,
                         }
                         resultado["datos-cocinas"].append([equipo_general, equipo_detalle])
 
@@ -1260,7 +2044,7 @@ class ObtenerNodosOpcUA:
                                 "vapor_limpieza":       datos.get("VAPOR_LIMPIEZA"),
                                 "vapor_limpieza_acc":   datos.get("VAPOR_LIMPIEZA_ACC"),
                             }],
-                            "historial": historial_actual,
+                            "historial": historial_websocket,
                         }
                         resultado["datos-enfriadores"].append([equipo_general, equipo_detalle])
 

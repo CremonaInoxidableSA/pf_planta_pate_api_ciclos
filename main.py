@@ -46,10 +46,10 @@ opc_client = OPCUAClient(URL)
 db.Base.metadata.create_all(bind=db.engine)
 dGeneral = ObtenerNodosOpcUA(opc_client)
 
-ruta_sql_sensores = os.path.join(ruta_principal, 'data', 'insert_sensores.sql')
-ruta_sql_equipos  = os.path.join(ruta_principal, 'data', 'insert_equipos.sql')
-ruta_sql_alarmas_l1  = os.path.join(ruta_principal, 'data', 'insert_alarmas_l1.sql')
-ruta_sql_alarmas_l2  = os.path.join(ruta_principal, 'data', 'insert_alarmas_l2.sql')
+ruta_sql_sensores = os.path.join(ruta_principal, 'data/bdd', 'insert_sensores.sql')
+ruta_sql_equipos  = os.path.join(ruta_principal, 'data/bdd', 'insert_equipos.sql')
+ruta_sql_alarmas_l1  = os.path.join(ruta_principal, 'data/bdd', 'insert_alarmas_l1.sql')
+ruta_sql_alarmas_l2  = os.path.join(ruta_principal, 'data/bdd', 'insert_alarmas_l2.sql')
 
 _reconexion_lock = asyncio.Lock()
 

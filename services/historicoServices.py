@@ -52,7 +52,7 @@ _HOJA_SENSORES = "SENSORES"
 # empiezan los datos (confirmado inspeccionando INFORME_CICLO.xlsx).
 _HEADER_ROW = 10
 _DATA_START_ROW = 11
-_TABLE_COLS = 10  # A..J
+_TABLE_COLS = 9  # A..I (sin TEMPERATURA PRODUCTO)
  
 # ------------------------------------------------------------
 # Mapeo de señales -> nombres candidatos en la tabla `Sensores`.
@@ -68,6 +68,8 @@ _TABLE_COLS = 10  # A..J
 # COCINAS
 ID_SENSOR_TEMP_AGUA = 1
 ID_SENSOR_TEMP_INGRESO = 2
+# Se conserva el identificador por compatibilidad con el resto del sistema,
+# pero no se consulta ni se muestra en el informe de ciclo.
 ID_SENSOR_TEMP_PRODUCTO = 3
 ID_SENSOR_NIVEL_AGUA = 5
 ID_SENSOR_BOMBA_CENTRIFUGA = 6
@@ -85,7 +87,6 @@ ID_SENSOR_VAPOR_LIMPIEZA = 10
 _IDS_ANALOGICOS = {
     "temp_agua": ID_SENSOR_TEMP_AGUA,
     "temp_ingreso": ID_SENSOR_TEMP_INGRESO,
-    "temp_producto": ID_SENSOR_TEMP_PRODUCTO,
     "nivel_agua": ID_SENSOR_NIVEL_AGUA,
 }
  
@@ -140,7 +141,7 @@ _HOJA_DETALLE = "DETALLES CICLO"
 _HOJA_SENSORES = "SENSORES"
 _HEADER_ROW = 10
 _DATA_START_ROW = 11
-_TABLE_COLS = 10  # A..J
+_TABLE_COLS = 9  # A..I (sin TEMPERATURA PRODUCTO)
  
 _TEMPLATE_INFORME_CICLO_PATH = (
     Path(__file__).resolve().parent.parent
@@ -877,21 +878,23 @@ def generar_informe_ciclo(db, id_ciclo: int, equipo: str):
  
     fechas_agua, valores_agua = _construir_serie_analogica(registros_por_sensor_aa.get(ID_SENSOR_TEMP_AGUA, []))
     fechas_ingreso, valores_ingreso = _construir_serie_analogica(registros_por_sensor_aa.get(ID_SENSOR_TEMP_INGRESO, []))
-    fechas_producto, valores_producto = _construir_serie_analogica(registros_por_sensor_aa.get(ID_SENSOR_TEMP_PRODUCTO, []))
     fechas_nivel, valores_nivel = _construir_serie_analogica(registros_por_sensor_aa.get(ID_SENSOR_NIVEL_AGUA, []))
  
-    for clave, fechas in (("temp_agua", fechas_agua), ("temp_ingreso", fechas_ingreso),
-                          ("temp_producto", fechas_producto), ("nivel_agua", fechas_nivel)):
+    for clave, fechas in (
+        ("temp_agua", fechas_agua),
+        ("temp_ingreso", fechas_ingreso),
+        ("nivel_agua", fechas_nivel),
+    ):
         if not fechas:
             logger.warning(f"[generar_informe_ciclo] Ciclo {ciclo.id}: sin registros de '{clave}'.")
  
     logger.info(
         f"[generar_informe_ciclo] Registros analógicos -> "
         f"agua={len(fechas_agua)} ({fechas_agua[0]} a {fechas_agua[-1]} si hay) "
-        f"ingreso={len(fechas_ingreso)} producto={len(fechas_producto)} nivel={len(fechas_nivel)}"
+        f"ingreso={len(fechas_ingreso)} nivel={len(fechas_nivel)}"
         if fechas_agua else
         f"[generar_informe_ciclo] Registros analógicos -> agua=0 ingreso={len(fechas_ingreso)} "
-        f"producto={len(fechas_producto)} nivel={len(fechas_nivel)}"
+        f"nivel={len(fechas_nivel)}"
     )
  
     # ---------- 4. Estados del ciclo ----------
@@ -943,7 +946,7 @@ def generar_informe_ciclo(db, id_ciclo: int, equipo: str):
     # Incluye TODAS las fuentes temporales relevantes: analógicos,
     # inicio Y fin de cada estado, inicio Y fin de cada intervalo
     # booleano, y el inicio/fin oficial del ciclo.
-    fechas_analogicas = set(fechas_agua) | set(fechas_ingreso) | set(fechas_producto) | set(fechas_nivel)
+    fechas_analogicas = set(fechas_agua) | set(fechas_ingreso) | set(fechas_nivel)
  
     fechas_estado = set()
     for inicio, fin, _ in intervalos_estado:
@@ -966,7 +969,7 @@ def generar_informe_ciclo(db, id_ciclo: int, equipo: str):
  
     todas_las_fechas = fechas_analogicas | fechas_estado | fechas_booleanas | fechas_ciclo
     cantidad_antes_dedup = (
-        len(fechas_agua) + len(fechas_ingreso) + len(fechas_producto) + len(fechas_nivel)
+        len(fechas_agua) + len(fechas_ingreso) + len(fechas_nivel)
         + sum(2 if fin is not None else 1 for _, fin, _ in intervalos_estado)
         + sum(2 if fin is not None else 1 for clave, _, _ in senales_booleanas for _, fin, _ in intervalos_booleanos[clave][0])
         + len(fechas_ciclo)
@@ -1036,7 +1039,6 @@ def generar_informe_ciclo(db, id_ciclo: int, equipo: str):
             *valores_bool_ordenados,
             _valor_vigente_ffill(fechas_ingreso, valores_ingreso, ts),
             _valor_vigente_ffill(fechas_agua, valores_agua, ts),
-            _valor_vigente_ffill(fechas_producto, valores_producto, ts),
             _valor_vigente_ffill(fechas_nivel, valores_nivel, ts),
         ]
         filas.append(fila)
@@ -1091,6 +1093,13 @@ def generar_informe_ciclo(db, id_ciclo: int, equipo: str):
     wb = load_workbook(_TEMPLATE_INFORME_CICLO_PATH)
  
     ws = wb[_HOJA_DETALLE]
+
+    # La plantilla original posee TEMPERATURA PRODUCTO en I y NIVEL AGUA
+    # en J. El informe final utiliza nueve columnas: se desplaza NIVEL AGUA
+    # a I y se deja J fuera de la tabla, sin alterar el encabezado superior
+    # ni la posición del logotipo.
+    ws.cell(row=_HEADER_ROW, column=9).value = "NIVEL AGUA [mm]"
+    ws.cell(row=_HEADER_ROW, column=10).value = None
  
     fecha_inicio_str = ciclo.fecha_inicio.strftime("%Y-%m-%d %H:%M:%S") if ciclo.fecha_inicio else "N/A"
     fecha_fin_str = ciclo.fecha_fin.strftime("%Y-%m-%d %H:%M:%S") if ciclo.fecha_fin else "N/A"
@@ -1137,7 +1146,7 @@ def generar_informe_ciclo(db, id_ciclo: int, equipo: str):
             _aplicar_estilo(celda, estilos_columna[col_idx - 1])
             if col_idx == 1:
                 celda.number_format = DATE_FMT
-            elif col_idx in (7, 8, 9, 10) and isinstance(valor, (int, float)):
+            elif col_idx in (7, 8, 9) and isinstance(valor, (int, float)):
                 celda.number_format = TEMP_FMT
     last_row = _DATA_START_ROW + len(filas) - 1
  
@@ -1146,11 +1155,11 @@ def generar_informe_ciclo(db, id_ciclo: int, equipo: str):
         tabla_actual = ws.tables[nombre_tabla]
         estilo_tabla = tabla_actual.tableStyleInfo
         del ws.tables[nombre_tabla]
-        nueva_tabla = Table(displayName=nombre_tabla, ref=f"A{_HEADER_ROW}:J{last_row}")
+        nueva_tabla = Table(displayName=nombre_tabla, ref=f"A{_HEADER_ROW}:I{last_row}")
         nueva_tabla.tableStyleInfo = estilo_tabla
         ws.add_table(nueva_tabla)
  
-    logger.info(f"[generar_informe_ciclo] Tabla Excel actualizada a rango A{_HEADER_ROW}:J{last_row}")
+    logger.info(f"[generar_informe_ciclo] Tabla Excel actualizada a rango A{_HEADER_ROW}:I{last_row}")
 
     _generar_hoja_sensores(
         wb=wb,
@@ -2162,7 +2171,6 @@ def generar_reporte_productividad(id_equipo, fecha_inicio, fecha_fin, db):
     excel_stream.seek(0)
 
     return excel_stream
-
 
 def productividad_equipo(db, fecha_inicio, fecha_fin, id_equipo):
     fecha_inicio = datetime.combine(fecha_inicio, datetime.min.time())
