@@ -32,44 +32,71 @@ services:
       start_period: 30s
 
   fastapi_app:
-    build: .
-    container_name: api_ciclos_container
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi_container
     restart: always
+
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+
     env_file:
       - .env
+
     environment:
       DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
+
     ports:
       - "8001:8001"
+
     volumes:
       - .:/app
+
     command: >
-      uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+      uvicorn main:app
+      --host 0.0.0.0
+      --port 8001
+      --reload
+
     networks:
       bridge_network:
       macvlan_network:
         ipv4_address: ${API_CICLOS_MACVLAN_IP}
   
   auth_app:
-    build: 
+    build:
       context: ../pf_pate_api_auth
       dockerfile: auth.Dockerfile
-    container_name: api_auth_container
+
+    container_name: fastapi_auth_container
     restart: always
+
     depends_on:
-      - fastapi_app
+      db:
+        condition: service_healthy
+      fastapi_app:
+        condition: service_started
+
     env_file:
       - .env
+
     environment:
       DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
+
     ports:
       - "8000:8000"
+
     volumes:
-      - .:/app
+      - ../pf_pate_api_auth:/app
+
     command: >
-      uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      uvicorn main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+
     networks:
       bridge_network:
       macvlan_network:
