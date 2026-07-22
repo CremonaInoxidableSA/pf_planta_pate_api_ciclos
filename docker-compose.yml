@@ -5,11 +5,11 @@ networks:
   macvlan_network:
     driver: macvlan
     driver_opts:
-      parent: eno1
+      parent: ${MACVLAN_PARENT}
     ipam:
       config:
-        - subnet: 192.168.10.0/24
-          gateway: 192.168.10.60
+        - subnet: ${MACVLAN_SUBNET}
+          gateway: ${MACVLAN_GATEWAY}
 
 services:
   db:
@@ -33,7 +33,7 @@ services:
 
   fastapi_app:
     build: .
-    container_name: fastapi_container
+    container_name: api_ciclos_container
     restart: always
     depends_on:
       - db
@@ -50,13 +50,13 @@ services:
     networks:
       bridge_network:
       macvlan_network:
-        ipv4_address: 192.168.10.115
+        ipv4_address: ${API_CICLOS_MACVLAN_IP}
   
   auth_app:
     build: 
-      context: ../
+      context: ../pf_pate_api_auth
       dockerfile: auth.Dockerfile
-    container_name: fastapi__auth_container
+    container_name: api_auth_container
     restart: always
     depends_on:
       - fastapi_app
@@ -73,6 +73,6 @@ services:
     networks:
       bridge_network:
       macvlan_network:
-        ipv4_address: 192.168.10.114
+        ipv4_address: ${AUTH_MACVLAN_IP}
 volumes:
   mysql_data:
