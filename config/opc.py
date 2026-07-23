@@ -10,7 +10,7 @@ class OPCUASubscriptionHandler(SubHandler):
     """
     Recibe notificaciones push del servidor OPC UA.
     Cada vez que un nodo suscripto cambia, datachange_notification
-    actualiza el cache en memoria — sin ningún round-trip de red.
+    actualiza el cache en memoria \u2014 sin ning�n round-trip de red.
 
     El cache se indexa por node_id (string): node.nodeid.to_string()
     """
@@ -24,12 +24,12 @@ class OPCUASubscriptionHandler(SubHandler):
     def get_all(self) -> dict:
         return dict(self._cache)
 
-    # ✅ NUEVO: limpia el cache para evitar servir valores obsoletos
+    # \u2705 NUEVO: limpia el cache para evitar servir valores obsoletos
     def clear(self):
         self._cache.clear()
         logger.info("Cache del handler OPC limpiado.")
 
-    # --- Llamados automáticamente por la librería opcua ---
+    # --- Llamados autom�ticamente por la librer�a opcua ---
 
     def datachange_notification(self, node, val, data):
         node_id = node.nodeid.to_string()
@@ -39,7 +39,7 @@ class OPCUASubscriptionHandler(SubHandler):
         logger.debug(f"Evento OPC recibido: {event}")
 
     def status_change_notification(self, status):
-        logger.warning(f"Cambio de estado en suscripción OPC: {status}")
+        logger.warning(f"Cambio de estado en suscripci�n OPC: {status}")
 
 
 class OPCUAClient:
@@ -55,71 +55,121 @@ class OPCUAClient:
         self._nodos_suscritos: list = []   # nodos Node ya navegados
 
     # ------------------------------------------------------------------
-    # Conexión / desconexión
+    # Conexi�n / desconexi�n
     # ------------------------------------------------------------------
 
     async def connect(self):
-        retries = 0
-        while retries < self.max_retries:
+        """
+        Intenta conectarse al servidor OPC.
+
+        Devuelve:
+            True: conexi�n validada correctamente.
+            False: se agotaron los intentos.
+        """
+
+        # Si ya existe una conexi�n realmente funcional, no crear otra.
+        if await self.ping():
+            return True
+
+        # Limpiar cualquier cliente anterior que haya quedado incompleto.
+        if self.client is not None:
+            await self.disconnect()
+
+        self.connected = False
+        self.client = None
+
+        for intento in range(1, self.max_retries + 1):
+            candidate = Client(self.server_url)
+
             try:
-                if self.client is None or not self.connected:
-                    self.client = Client(self.server_url)
-                    await asyncio.to_thread(self.client.connect)
-                    self.connected = True
-                    logger.info("✅ Conectado al servidor OPC UA.")
-                    return
+                def _conectar_y_validar():
+                    candidate.connect()
+
+                    # Validar la conexi�n mediante una lectura OPC real.
+                    candidate.get_root_node().get_browse_name()
+
+                await asyncio.to_thread(_conectar_y_validar)
+
+                # Publicar el cliente solamente despu�s de validarlo.
+                self.client = candidate
+                self.connected = True
+
+                logger.info("\u2705 Conectado al servidor OPC UA.")
+                return True
+
             except Exception as e:
-                retries += 1
+                self.connected = False
+                self.client = None
+
+                # El cliente pudo quedar parcialmente conectado.
+                try:
+                    await asyncio.to_thread(candidate.disconnect)
+                except Exception:
+                    pass
+
                 logger.error(
-                    f"🔄 Error al conectar OPC UA. Intento {retries}/{self.max_retries}: {e}"
+                    "\U0001f504 Error al conectar OPC UA. Intento %s/%s: %s",
+                    intento,
+                    self.max_retries,
+                    e,
                 )
-                await asyncio.sleep(self.retry_delay)
-        logger.warning("⚠️ No se pudo conectar al servidor después de varios intentos.")
+
+                if intento < self.max_retries:
+                    await asyncio.sleep(self.retry_delay)
+
+        logger.warning(
+            "\u26a0\ufe0f No se pudo conectar al servidor despu�s de varios intentos."
+        )
+        return False
 
     async def disconnect(self):
         """
-        Cancela la suscripción, limpia el cache y cierra la conexión TCP.
-        Limpiar el cache aquí es crítico: evita que datosGenerales()
-        siga sirviendo valores obsoletos de la conexión anterior.
+        Cancela la suscripci�n, limpia el cach� y cierra la conexi�n.
         """
+
+        # Guardar la referencia local antes de limpiar el estado p�blico.
+        client_actual = self.client
+
+        # Marcar inmediatamente el cliente como no disponible.
+        self.connected = False
+        self.client = None
+
         await self._cancelar_suscripcion()
 
-        # ✅ NUEVO: limpiar cache al desconectar
+        # Evitar reutilizar valores anteriores despu�s de reconectar.
         self.handler.clear()
         self._nodos_suscritos = []
 
-        if self.client and self.connected:
+        if client_actual:
             try:
-                await asyncio.to_thread(self.client.disconnect)
+                await asyncio.to_thread(client_actual.disconnect)
             except Exception:
                 pass
-            logger.warning("⚠️ Conexión OPC UA cerrada.")
-            self.connected = False
-            self.client    = None
+
+            logger.warning("\u26a0\ufe0f Conexi�n OPC UA cerrada.")
 
     async def reconnect(self):
         """
-        Solo desconecta y vuelve a conectar.
-        NO re-suscribe: esa responsabilidad queda en la capa de servicio
-        (ObtenerNodosOpcUA.iniciar_suscripcion), que debe navegar el árbol
-        de nuevo con nodos frescos de la nueva conexión.
+        Desconecta y vuelve a conectar.
+
+        La suscripci�n no se reconstruye aqu� porque los Node anteriores
+        dejan de ser v�lidos despu�s de una reconexi�n.
         """
-        logger.info("🔄 Intentando reconectar al servidor OPC UA...")
+
+        logger.info("\U0001f504 Intentando reconectar al servidor OPC UA...")
+
         await self.disconnect()
-        await self.connect()
-        # ✅ CORRECCIÓN: NO llamar a suscribir_nodos aquí.
-        # Los Node del árbol anterior son inválidos en la nueva conexión.
-        # main.py llamará a dGeneral.iniciar_suscripcion() después de reconnect().
+        return await self.connect()
 
     # ------------------------------------------------------------------
-    # Health check — para el monitor en main.py
+    # Health check \u2014 para el monitor en main.py
     # ------------------------------------------------------------------
 
     async def ping(self) -> bool:
         """
-        Verifica que la conexión OPC UA siga activa haciendo una lectura
-        mínima (browse_name del root node). Devuelve True si la conexión
-        está viva, False si cayó.
+        Verifica que la conexi�n OPC UA siga activa haciendo una lectura
+        m�nima (browse_name del root node). Devuelve True si la conexi�n
+        est� viva, False si cay�.
         """
         if not self.client or not self.connected:
             return False
@@ -129,40 +179,73 @@ class OPCUAClient:
             await asyncio.to_thread(_check)
             return True
         except Exception as e:
-            logger.warning(f"⚠️ Ping OPC fallido: {e}")
+            logger.warning(f"\u26a0\ufe0f Ping OPC fallido: {e}")
             return False
 
     # ------------------------------------------------------------------
-    # Suscripción — recibe nodos YA NAVEGADOS (objetos Node de opcua)
+    # Suscripci�n \u2014 recibe nodos YA NAVEGADOS (objetos Node de opcua)
     # ------------------------------------------------------------------
 
     async def suscribir_nodos(self, nodos: list, period_ms: int = 500):
         """
-        Crea (o re-crea) la suscripción OPC UA.
-
-        Args:
-            nodos:     Lista de objetos Node ya navegados desde el árbol OPC.
-            period_ms: Intervalo de publicación en ms (default 500).
+        Crea una suscripci�n utilizando nodos reci�n navegados.
         """
+
         if not self.connected or not self.client:
-            logger.error("No se puede suscribir: cliente OPC no conectado.")
-            return
+            logger.error(
+                "No se puede suscribir: cliente OPC no conectado."
+            )
+            return False
+
+        if not nodos:
+            logger.error(
+                "No se puede suscribir: la lista de nodos est� vac�a."
+            )
+            return False
 
         await self._cancelar_suscripcion()
 
+        cliente_actual = self.client
+
         def _crear():
-            sub = self.client.create_subscription(period_ms, self.handler)
-            sub.subscribe_data_change(nodos)
+            sub = cliente_actual.create_subscription(
+                period_ms,
+                self.handler,
+            )
+
+            try:
+                sub.subscribe_data_change(nodos)
+            except Exception:
+                try:
+                    sub.delete()
+                except Exception:
+                    pass
+                raise
+
             return sub
 
         try:
-            self._subscription    = await asyncio.to_thread(_crear)
+            nueva_suscripcion = await asyncio.to_thread(_crear)
+
+            self._subscription = nueva_suscripcion
             self._nodos_suscritos = list(nodos)
+
             logger.info(
-                f"✅ Suscripción OPC activa: {len(nodos)} nodos, período {period_ms} ms"
+                "\u2705 Suscripci�n OPC activa: %s nodos, per�odo %s ms",
+                len(nodos),
+                period_ms,
             )
+            return True
+
         except Exception as e:
-            logger.error(f"Error al crear suscripción OPC UA: {e}")
+            self._subscription = None
+            self._nodos_suscritos = []
+
+            logger.error(
+                "Error al crear suscripci�n OPC UA: %s",
+                e,
+            )
+            return False
 
     async def _cancelar_suscripcion(self):
         if self._subscription:
@@ -178,26 +261,32 @@ class OPCUAClient:
 
     def read_node(self, node_id: str):
         if not self.client or not self.connected:
-            raise Exception("⚠️ Cliente OPC UA no conectado.")
+            raise Exception("\u26a0\ufe0f Cliente OPC UA no conectado.")
         return self.client.get_node(node_id).get_value()
 
     def get_objects_node(self):
         if not self.client or not self.connected:
-            raise Exception("⚠️ Cliente OPC UA no conectado.")
+            raise Exception("\u26a0\ufe0f Cliente OPC UA no conectado.")
         return self.client.get_objects_node()
 
     async def get_objects_nodos(self):
         if not self.client or not self.connected:
-            raise Exception("⚠️ Cliente OPC UA no conectado.")
+            raise Exception("\u26a0\ufe0f Cliente OPC UA no conectado.")
         return self.client.get_root_node()
 
     async def handle_reconnect(self):
         """
-        Punto de entrada de reconexión de emergencia desde datosGenerales().
-        Solo intenta reconectar el transporte; la re-suscripción completa
-        queda en manos del monitor_opc() de main.py.
+        Intenta recuperar solamente la conexi�n.
+
+        La navegaci�n y suscripci�n ser�n administradas por main.py.
         """
+
         try:
-            await self.reconnect()
+            return await self.reconnect()
+
         except Exception as e:
-            logger.error(f"⚠️ Error al intentar reconectar: {e}")
+            logger.error(
+                "\u26a0\ufe0f Error al intentar reconectar: %s",
+                e,
+            )
+            return False

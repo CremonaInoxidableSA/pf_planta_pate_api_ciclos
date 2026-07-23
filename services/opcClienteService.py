@@ -14,7 +14,6 @@ import logging
 import asyncio
 import math
 import threading
-import ua
 
 from config.db import get_db
 
@@ -82,7 +81,7 @@ IO_SENSOR_MAP_ENFRIADOR: dict[str, int] = {
     "AMONIACO":            8
 }
 
-# Mapeo campo JSON --> id sensor analógico (SensoresAA)
+# Mapeo campo JSON --> id sensor anal�gico (SensoresAA)
 AA_SENSOR_MAP: dict[str, int] = {
     "temp_agua":    1,
     "temp_ingreso": 2,
@@ -154,7 +153,7 @@ def _construir_tramos_estado(historial: list) -> list[dict]:
     Agrupa filas consecutivas del mismo estado en tramos.
 
     Maneja correctamente:
-    - Historial vacío        -> []
+    - Historial vac�o        -> []
     - Una sola muestra       -> un tramo con fechaInicio == fechaFin
     - Timestamps repetidos   -> el tramo se extiende sin error
     - Timestamps fuera orden -> se ordenan antes de procesar
@@ -202,7 +201,7 @@ def _construir_tramos_estado(historial: list) -> list[dict]:
             inicio_actual = t
             fin_actual    = t
 
-    # Último tramo (siempre existe)
+    # �ltimo tramo (siempre existe)
     tramos.append({
         "nombre":             nombre_actual,
         "fechaInicio":        inicio_actual,
@@ -248,9 +247,9 @@ class ObtenerNodosOpcUA:
         #     "id_ciclo": int,
         # }
         #
-        # Cuando una señal cambia de valor el tramo anterior se persiste
+        # Cuando una se�al cambia de valor el tramo anterior se persiste
         # en BD inmediatamente y se abre uno nuevo en memoria.
-        # Al cierre del ciclo se persisten los tramos aún abiertos.
+        # Al cierre del ciclo se persisten los tramos a�n abiertos.
         # ---------------------------------------------------------------
         self._io_state: dict[str, dict[str, dict]] = {}
 
@@ -284,7 +283,7 @@ class ObtenerNodosOpcUA:
                 pass
 
     # -----------------------------------------------------------------------
-    # Navegación del árbol OPC
+    # Navegaci�n del �rbol OPC
     # -----------------------------------------------------------------------
 
     def _sorted_children(self, node):
@@ -408,27 +407,79 @@ class ObtenerNodosOpcUA:
 
     async def iniciar_suscripcion(self, period_ms: int = 500):
         """
-        Reset completo del estado interno + navegacion + suscripcion.
-        Llamado al arrancar y despues de cada reconexion OPC.
+        Navega nuevamente el �rbol OPC y crea una suscripci�n nueva.
+
+        Debe llamarse al conectar por primera vez y despu�s de cada
+        reconexi�n.
         """
-        self._equipos         = []
+
+        # No navegar si connect() no termin� correctamente.
+        if (
+            not self.conexion_servidor.connected
+            or self.conexion_servidor.client is None
+        ):
+            raise ConnectionError(
+                "No se puede navegar el �rbol OPC: cliente no conectado"
+            )
+
+        # No reutilizar nodos de una conexi�n anterior.
+        self._equipos = []
         self._recetario_cache = {}
-        self._pf_l1_node      = None
-        # _io_state no contiene objetos Node, solo valores y fechas. Se conserva
-        # en una reconexion para no perder el tramo abierto antes del corte OPC.
+        self._pf_l1_node = None
+
+        # Evitar valores antiguos despu�s de una reconexi�n.
+        self.conexion_servidor.handler.clear()
+
+        # No limpiar self._io_state.
+        # Contiene valores y fechas, no objetos Node.
+        # Se conserva para no perder tramos IO abiertos.
 
         def _setup():
-            root_node = self.conexion_servidor.client.get_root_node()
+            root_node = (
+                self.conexion_servidor.client.get_root_node()
+            )
+
             nodos = self._navegar_arbol_sync(root_node)
-            self._recetario_cache = self._obtener_recetario_desde_opc_sync(self._pf_l1_node)
+
+            self._recetario_cache = (
+                self._obtener_recetario_desde_opc_sync(
+                    self._pf_l1_node
+                )
+            )
+
             return nodos
 
-        nodos = await asyncio.to_thread(_setup)
-        await self.conexion_servidor.suscribir_nodos(nodos, period_ms)
+        try:
+            nodos = await asyncio.to_thread(_setup)
+
+            suscripcion_ok = (
+                await self.conexion_servidor.suscribir_nodos(
+                    nodos,
+                    period_ms,
+                )
+            )
+
+            if not suscripcion_ok:
+                raise RuntimeError(
+                    "No se pudo crear la suscripci�n OPC UA"
+                )
+
+        except Exception:
+            # Nunca dejar equipos o nodos parcialmente navegados.
+            self._equipos = []
+            self._recetario_cache = {}
+            self._pf_l1_node = None
+
+            # El error debe llegar al monitor de main.py.
+            raise
+
         logger.info(
-            f"Suscripcion iniciada: {len(nodos)} nodos, "
-            f"{len(self._recetario_cache)} recetas cargadas."
+            "Suscripci�n iniciada: %s nodos, %s recetas cargadas.",
+            len(nodos),
+            len(self._recetario_cache),
         )
+
+        return True
 
     async def cargar_recetario(self):
         if not self._pf_l1_node:
@@ -948,8 +999,8 @@ class ObtenerNodosOpcUA:
 
     def _lote_del_historial(self, historial: list) -> str:
         """
-        Devuelve el campo 'lote' de la última fila del historial,
-        o cadena vacía si el historial está vacío o no tiene ese campo.
+        Devuelve el campo 'lote' de la �ltima fila del historial,
+        o cadena vac�a si el historial est� vac�o o no tiene ese campo.
         """
         if not historial:
             return ""
@@ -972,18 +1023,18 @@ class ObtenerNodosOpcUA:
         ahora. Si hay discrepancia, cierra el ciclo colgado con
         finalizar_ciclo_completo() y devuelve [] para iniciar uno nuevo.
 
-        Tabla de decisión
-        ─────────────────────────────────────────────────────────────────
-        historial vacío             → devolver []   (nada que sanear)
-        lote_json vacío             → devolver historial sin tocar
+        Tabla de decisi�n
+        \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        historial vac�o             \u2192 devolver []   (nada que sanear)
+        lote_json vac�o             \u2192 devolver historial sin tocar
                                       (no se puede comparar)
-        lote_actual vacío           → devolver historial sin tocar
+        lote_actual vac�o           \u2192 devolver historial sin tocar
                                       (OPC en estado transitorio)
-        lote_actual == lote_json    → devolver historial (continuación ok)
-        lote_actual != lote_json    → CICLO COLGADO:
+        lote_actual == lote_json    \u2192 devolver historial (continuaci�n ok)
+        lote_actual != lote_json    \u2192 CICLO COLGADO:
                                         1. finalizar_ciclo_completo()
                                         2. devolver []
-        ─────────────────────────────────────────────────────────────────
+        \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         """
         if not historial:
             return historial
@@ -1026,7 +1077,7 @@ class ObtenerNodosOpcUA:
 
         if not lote_actual:
             logger.debug(
-                f"[{linea}/{tipo}/{numero_local}] LOTE_CICLO OPC vacío. "
+                f"[{linea}/{tipo}/{numero_local}] LOTE_CICLO OPC vac�o. "
                 f"Se mantiene historial de lote '{lote_json}' sin cerrar."
             )
             return historial
@@ -1034,7 +1085,7 @@ class ObtenerNodosOpcUA:
         if lote_actual == lote_json:
             return historial
 
-        # ── Lote diferente → CICLO COLGADO ──────────────────────────────
+        # \u2500\u2500 Lote diferente \u2192 CICLO COLGADO \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         logger.warning(
             f"\033[1;33m[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
             f"[{linea}/{tipo}/{numero_local}] CICLO COLGADO DETECTADO. "
@@ -1073,7 +1124,7 @@ class ObtenerNodosOpcUA:
         return []
 
     # -----------------------------------------------------------------------
-    # BD — ciclos
+    # BD \u2014 ciclos
     # -----------------------------------------------------------------------
 
     def _obtener_ciclo_activo(self, id_equipo):
@@ -1090,7 +1141,7 @@ class ObtenerNodosOpcUA:
 
     def _cerrar_ciclo_bd(self, ciclo: Ciclo, estado_maquina: str):
         """
-        Cierre mínimo de un ciclo directamente en BD, sin historial JSON.
+        Cierre m�nimo de un ciclo directamente en BD, sin historial JSON.
         Se usa cuando se detecta una inconsistencia de lote en BD durante
         _resolver_id_ciclo (el ciclo abierto pertenece a un lote diferente).
         """
@@ -1117,16 +1168,16 @@ class ObtenerNodosOpcUA:
         Determina el id del ciclo activo.
 
         Prioridad:
-          1. idCiclo del historial JSON — solo si el lote coincide.
-             (_sanear_historial_por_lote ya garantizó la consistencia,
-             pero esta comprobación actúa como segunda línea de defensa.)
-          2. Ciclo abierto en BD para este equipo — solo si el lote coincide.
+          1. idCiclo del historial JSON \u2014 solo si el lote coincide.
+             (_sanear_historial_por_lote ya garantiz� la consistencia,
+             pero esta comprobaci�n act�a como segunda l�nea de defensa.)
+          2. Ciclo abierto en BD para este equipo \u2014 solo si el lote coincide.
              Si el ciclo en BD tiene lote diferente, se cierra como CANCELADO
              y se sigue al paso 3.
           3. Crear ciclo nuevo en BD.
         """
         try:
-            # 1. Del historial — solo si el lote coincide
+            # 1. Del historial \u2014 solo si el lote coincide
             if historial_actual:
                 lote_json = self._lote_del_historial(historial_actual)
                 if lote_json and lote_ciclo and lote_json == lote_ciclo:
@@ -1140,21 +1191,21 @@ class ObtenerNodosOpcUA:
                         f"lote OPC '{lote_ciclo}'. No se reutiliza idCiclo del historial."
                     )
                 else:
-                    # Alguno de los dos lotes está vacío: usar el id igualmente
+                    # Alguno de los dos lotes est� vac�o: usar el id igualmente
                     # (caso transitorio al arrancar el sistema)
                     ultimo_id = historial_actual[-1].get("idCiclo")
                     if ultimo_id:
                         return ultimo_id
 
-            # 2. Ciclo abierto en BD — verificar lote
+            # 2. Ciclo abierto en BD \u2014 verificar lote
             ciclo_activo = self._obtener_ciclo_activo(id_equipo)
             if ciclo_activo:
                 lote_bd = str(ciclo_activo.lote or "").strip()
                 if not lote_ciclo or not lote_bd or lote_bd == lote_ciclo:
-                    # Coincide o alguno está vacío → reutilizar
+                    # Coincide o alguno est� vac�o \u2192 reutilizar
                     return ciclo_activo.id
                 else:
-                    # Lote diferente → inconsistencia en BD
+                    # Lote diferente \u2192 inconsistencia en BD
                     logger.warning(
                         f"Ciclo activo BD {ciclo_activo.id} tiene lote '{lote_bd}' "
                         f"pero OPC informa lote '{lote_ciclo}'. "
@@ -1266,7 +1317,7 @@ class ObtenerNodosOpcUA:
             return random.randint(1, 1_000_000)
 
     # -----------------------------------------------------------------------
-    # SensoresIO — trazabilidad en tiempo real
+    # SensoresIO \u2014 trazabilidad en tiempo real
     # -----------------------------------------------------------------------
 
     def _io_map_para_tipo(self, tipo: str) -> dict[str, int]:
@@ -1403,7 +1454,7 @@ class ObtenerNodosOpcUA:
             self._io_state.pop(equipo_key, None)
 
     # -----------------------------------------------------------------------
-    # SensoresAA — persistencia historica al cierre del ciclo
+    # SensoresAA \u2014 persistencia historica al cierre del ciclo
     # -----------------------------------------------------------------------
 
     @staticmethod
@@ -1634,7 +1685,7 @@ class ObtenerNodosOpcUA:
             return False
 
     # -----------------------------------------------------------------------
-    # EstadoCiclo — persistencia de tramos al cierre del ciclo
+    # EstadoCiclo \u2014 persistencia de tramos al cierre del ciclo
     # -----------------------------------------------------------------------
 
     def _persistir_estados_ciclo(self, id_ciclo: int, tramos: list) -> bool:
@@ -1824,7 +1875,7 @@ class ObtenerNodosOpcUA:
             return False
 
     # -----------------------------------------------------------------------
-    # datosGenerales — loop principal de lectura y publicacion WebSocket
+    # datosGenerales \u2014 loop principal de lectura y publicacion WebSocket
     # -----------------------------------------------------------------------
 
     async def datosGenerales(self):
@@ -1931,7 +1982,7 @@ class ObtenerNodosOpcUA:
                             archivo_historial
                         )
 
-                        # Trazabilidad IO — deteccion de cambios en tiempo real
+                        # Trazabilidad IO \u2014 deteccion de cambios en tiempo real
                         self._actualizar_io_state(key_estado, tipo, datos, id_ciclo, ahora)
 
                     # ---------------------------------------------------------
@@ -2061,7 +2112,7 @@ class ObtenerNodosOpcUA:
         return resultado
 
     # -----------------------------------------------------------------------
-    # Recetario — sincronizacion a BD
+    # Recetario \u2014 sincronizacion a BD
     # -----------------------------------------------------------------------
 
     async def actualizarRecetas(self):

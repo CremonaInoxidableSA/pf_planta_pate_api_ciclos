@@ -80,7 +80,7 @@ services:
         condition: service_started
 
     env_file:
-      - .env
+      - ../pf_pate_api_auth/.env
 
     environment:
       DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}

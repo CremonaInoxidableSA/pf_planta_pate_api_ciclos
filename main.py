@@ -52,6 +52,7 @@ ruta_sql_alarmas_l1  = os.path.join(ruta_principal, 'data/bdd', 'insert_alarmas_
 ruta_sql_alarmas_l2  = os.path.join(ruta_principal, 'data/bdd', 'insert_alarmas_l2.sql')
 
 _reconexion_lock = asyncio.Lock()
+_opc_disponible = asyncio.Event()
 
 def cargar_archivo_sql(file_path: str):
     try:
@@ -69,13 +70,31 @@ def cargar_archivo_sql(file_path: str):
 
 
 async def central_opc_render():
-    
     while True:
         try:
+            # Esperar hasta que conexi�n, �rbol y suscripci�n est�n listos.
+            await _opc_disponible.wait()
+
+            if not opc_client.connected:
+                _opc_disponible.clear()
+                continue
+
             datos = await dGeneral.datosGenerales()
-            await ws_manager.send_message("datos-generales", datos)
+
+            await ws_manager.send_message(
+                "datos-generales",
+                datos,
+            )
+
+        except asyncio.CancelledError:
+            raise
+
         except Exception as e:
-            logger.error(f"Error en el loop WebSocket: {e}")
+            logger.error(
+                "Error en el loop WebSocket: %s",
+                e,
+            )
+
         await asyncio.sleep(1.0)
 
 async def monitor_opc(period_ms: int = 500, check_interval: int = 10):
@@ -87,10 +106,10 @@ async def monitor_opc(period_ms: int = 500, check_interval: int = 10):
         if alive:
             continue
 
-        logger.warning("⚠️ Monitor OPC: ping fallido. Iniciando recuperación...")
+        logger.warning("\u26a0\ufe0f Monitor OPC: ping fallido. Iniciando recuperaci�n...")
 
         if _reconexion_lock.locked():
-            logger.info("🔒 Reconexión ya en curso, saltando este ciclo.")
+            logger.info("\U0001f512 Reconexi�n ya en curso, saltando este ciclo.")
             continue
 
         async with _reconexion_lock:
@@ -98,44 +117,76 @@ async def monitor_opc(period_ms: int = 500, check_interval: int = 10):
                 await opc_client.reconnect()
 
                 if not opc_client.connected:
-                    logger.error("❌ Reconexión fallida. Se reintentará en el próximo ciclo.")
+                    logger.error("\u274c Reconexi�n fallida. Se reintentar� en el pr�ximo ciclo.")
                     continue
                 await dGeneral.iniciar_suscripcion(period_ms=period_ms)
-
-                logger.info("✅ Recuperación OPC completada. Sistema reanudado.")
+                _opc_disponible.set()
+                logger.info("\u2705 Recuperaci�n OPC completada. Sistema reanudado.")
 
             except Exception as e:
-                logger.error(f"❌ Error durante la recuperación OPC: {e}")
+                logger.error(f"\u274c Error durante la recuperaci�n OPC: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     session = db.SessionLocal()
+    tareas = []
+
     try:
-        await opc_client.connect()
-        logger.info("Conectado al servidor OPC UA.")
+        # Lanzar las tareas sin esperar la conexi�n OPC.
+        tareas = [
+            asyncio.create_task(
+                monitor_opc(
+                    period_ms=500,
+                    check_interval=10,
+                ),
+                name="monitor-opc",
+            ),
+            asyncio.create_task(
+                central_opc_render(),
+                name="central-opc-render",
+            ),
+        ]
 
-        await dGeneral.iniciar_suscripcion(period_ms=500)
-
-        asyncio.create_task(central_opc_render())
-        asyncio.create_task(monitor_opc(period_ms=500, check_interval=10))
         if session.query(Sensores).count() == 0:
             logger.info("Cargando registros BDD [Sensores]")
             cargar_archivo_sql(ruta_sql_sensores)
+
         if session.query(Equipo).count() == 0:
             logger.info("Cargando registros BDD [Equipos]")
             cargar_archivo_sql(ruta_sql_equipos)
+
         if session.query(Alarmas).count() == 0:
             logger.info("Cargando registros BDD [Alarmas_l1]")
             cargar_archivo_sql(ruta_sql_alarmas_l1)
+
         if session.query(AlarmasL2).count() == 0:
             logger.info("Cargando registros BDD [Alarmas_l2]")
             cargar_archivo_sql(ruta_sql_alarmas_l2)
+
+        logger.info(
+            "FastAPI iniciada. "
+            "La conexi�n OPC se administra en segundo plano."
+        )
+
+        # FastAPI completa el arranque aunque OPC est� apagado.
         yield
 
     finally:
+        # Pausar cualquier captura.
+        _opc_disponible.clear()
+
+        # Cancelar las tareas creadas.
+        for tarea in tareas:
+            tarea.cancel()
+
+        if tareas:
+            await asyncio.gather(
+                *tareas,
+                return_exceptions=True,
+            )
+
         await opc_client.disconnect()
         session.close()
-
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
@@ -165,6 +216,8 @@ async def resumen_desmoldeo(websocket: WebSocket, id: str):
 
 @app.get("/")
 def read_root():
+    estado_bdd = "Desconectado"
+    estado_opc = "Desconectado"
     try:
         with db.engine.connect() as connection:
             connection.execute(text("SELECT 1"))
