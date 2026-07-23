@@ -347,16 +347,16 @@ class ObtenerNodosOpcUA:
         """
         nodos_suscritos  = []
         objects_node     = root_node.get_child(["0:Objects"])
-        server_ifaces    = objects_node.get_child(["2:ServerInterfaces"])
-        pf_l1            = server_ifaces.get_child(["2:PF-L1"])
-        pf_l2            = server_ifaces.get_child(["2:PF-L2"])
+        server_ifaces    = objects_node.get_child(["3:ServerInterfaces"])
+        pf_l1            = server_ifaces.get_child(["4:PF-L1"])
+        pf_l2            = server_ifaces.get_child(["5:PF-L2"])
         self._pf_l1_node = pf_l1
 
         grupos = [
-            (pf_l1.get_child(["2:COCINA L1"]),    "PF-L1", "COCINA",    0),
-            (pf_l1.get_child(["2:ENFRIADOR L1"]), "PF-L1", "ENFRIADOR", 6),
-            (pf_l2.get_child(["2:COCINA L2"]),    "PF-L2", "COCINA",    3),
-            (pf_l2.get_child(["2:ENFRIADOR L2"]), "PF-L2", "ENFRIADOR", 10),
+            (pf_l1.get_child(["4:COCINA L1"]),    "PF-L1", "COCINA",    0),
+            (pf_l1.get_child(["4:ENFRIADOR L1"]), "PF-L1", "ENFRIADOR", 6),
+            (pf_l2.get_child(["5:COCINA L2"]),    "PF-L2", "COCINA",    3),
+            (pf_l2.get_child(["5:ENFRIADOR L2"]), "PF-L2", "ENFRIADOR", 10),
         ]
         for grupo_node, linea, tipo, offset_id in grupos:
             logger.info(f"Navegando {linea} / {tipo}...")

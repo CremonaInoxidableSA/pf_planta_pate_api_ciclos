@@ -645,7 +645,7 @@ def main():
     ip = get_local_ip()
 
     server = Server()
-    server.set_endpoint(f"opc.tcp://{ip}:4841")
+    server.set_endpoint(f"opc.tcp://0.0.0.0:4841")
     server.set_server_name("Servidor OPC UA PF - Python")
     server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
 
