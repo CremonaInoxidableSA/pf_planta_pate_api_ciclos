@@ -1,6 +1,6 @@
 
 from collections import defaultdict
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime
 from bisect import bisect_right
  
 from models.ciclo import Ciclo
@@ -20,15 +20,13 @@ from openpyxl.styles import (
     Font,
     Alignment,
     PatternFill,
-    Border,
-    Side,
 )
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from io import BytesIO
  
 from pathlib import Path
 import copy as _copy
-import unicodedata
+import math
 import logging
  
 logger = logging.getLogger("uvicorn")
@@ -2255,6 +2253,27 @@ def productividad_equipo(db, fecha_inicio, fecha_fin, id_equipo):
  
     return respuesta
 
+def _numero_finito_o_none(valor):
+    """Normaliza lecturas OPC numericas; cero siempre es un valor valido."""
+    if valor is None or isinstance(valor, bool):
+        return valor
+    try:
+        numero = float(valor)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numero):
+        return None
+    if isinstance(valor, int):
+        return valor
+    return numero
+
+def _redondear_para_presentacion(valor):
+    """Formato visual compatible con el frontend; nunca se guarda en JSONL."""
+    numero = _numero_finito_o_none(valor)
+    if numero is None or isinstance(numero, bool):
+        return "Sin registro"
+    return round(float(numero), 1)
+
 def obtener_valor_sensores(db, id_ciclo:int, id_sensor:int, tipo):
     try:
         if tipo == "MAX":
@@ -2265,7 +2284,9 @@ def obtener_valor_sensores(db, id_ciclo:int, id_sensor:int, tipo):
                 .limit(1)
                 .first()
             )
-            return resultado.valor if resultado else 0
+
+            valor_temperatura = _redondear_para_presentacion(resultado.valor)
+            return valor_temperatura if valor_temperatura else 0
 
         if tipo == "MIN":
             resultado = (
@@ -2275,7 +2296,9 @@ def obtener_valor_sensores(db, id_ciclo:int, id_sensor:int, tipo):
                 .limit(1)
                 .first()
             )
-            return resultado.valor if resultado else 0
+
+            valor_temperatura = _redondear_para_presentacion(resultado.valor)
+            return valor_temperatura if valor_temperatura else 0
 
         return 0
         

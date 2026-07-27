@@ -1,0 +1,114 @@
+{"id_historial":1,"tiempo":"2026-07-27 11:37:20","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":26.0,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1586.8}
+{"id_historial":2,"tiempo":"2026-07-27 11:37:21","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":28.1,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1598.9}
+{"id_historial":3,"tiempo":"2026-07-27 11:37:22","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":30.1,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1640.9}
+{"id_historial":4,"tiempo":"2026-07-27 11:37:23","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":32.1,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1590.8}
+{"id_historial":5,"tiempo":"2026-07-27 11:37:24","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":34.2,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1638.2}
+{"id_historial":6,"tiempo":"2026-07-27 11:37:25","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":36.2,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1617.7}
+{"id_historial":7,"tiempo":"2026-07-27 11:37:26","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":38.2,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1634.1}
+{"id_historial":8,"tiempo":"2026-07-27 11:37:27","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":40.3,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1618.3}
+{"id_historial":9,"tiempo":"2026-07-27 11:37:28","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":42.3,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1586.9}
+{"id_historial":10,"tiempo":"2026-07-27 11:37:29","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":44.3,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1581.6}
+{"id_historial":11,"tiempo":"2026-07-27 11:37:30","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":48.4,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1616.9}
+{"id_historial":12,"tiempo":"2026-07-27 11:37:31","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":50.4,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1601.3}
+{"id_historial":13,"tiempo":"2026-07-27 11:37:32","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":52.5,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1572.0}
+{"id_historial":14,"tiempo":"2026-07-27 11:37:33","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":54.5,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1576.0}
+{"id_historial":15,"tiempo":"2026-07-27 11:37:34","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":56.5,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1626.4}
+{"id_historial":16,"tiempo":"2026-07-27 11:37:35","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":58.6,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1644.1}
+{"id_historial":17,"tiempo":"2026-07-27 11:37:37","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":60.6,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1647.8}
+{"id_historial":18,"tiempo":"2026-07-27 11:37:38","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":62.6,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1585.3}
+{"id_historial":19,"tiempo":"2026-07-27 11:37:39","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":64.7,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1562.2}
+{"id_historial":20,"tiempo":"2026-07-27 11:37:40","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":66.7,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1605.0}
+{"id_historial":21,"tiempo":"2026-07-27 11:37:41","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":68.7,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1561.8}
+{"id_historial":22,"tiempo":"2026-07-27 11:37:42","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":70.8,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1583.3}
+{"id_historial":23,"tiempo":"2026-07-27 11:37:43","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":72.8,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1562.1}
+{"id_historial":24,"tiempo":"2026-07-27 11:37:44","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":74.8,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1626.4}
+{"id_historial":25,"tiempo":"2026-07-27 11:37:45","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":76.9,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1618.4}
+{"id_historial":26,"tiempo":"2026-07-27 11:37:46","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":78.9,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1581.2}
+{"id_historial":27,"tiempo":"2026-07-27 11:37:47","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":80.9,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1592.8}
+{"id_historial":28,"tiempo":"2026-07-27 11:37:48","estado":"PRE OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":83.0,"temp_ingreso":18.0,"temp_prod":0.0,"niv_agua":1594.8}
+{"id_historial":29,"tiempo":"2026-07-27 11:37:49","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":80.9,"temp_ingreso":18.0,"temp_prod":6.199999809265137,"niv_agua":1650.0}
+{"id_historial":30,"tiempo":"2026-07-27 11:37:50","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":80.9,"temp_ingreso":18.0,"temp_prod":6.309999942779541,"niv_agua":1685.0}
+{"id_historial":31,"tiempo":"2026-07-27 11:37:51","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":80.2,"temp_ingreso":18.0,"temp_prod":6.429999828338623,"niv_agua":1720.0}
+{"id_historial":32,"tiempo":"2026-07-27 11:37:52","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":80.1,"temp_ingreso":18.0,"temp_prod":6.710000038146973,"niv_agua":1790.0}
+{"id_historial":33,"tiempo":"2026-07-27 11:37:54","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":80.3,"temp_ingreso":18.0,"temp_prod":6.860000133514404,"niv_agua":1825.0}
+{"id_historial":34,"tiempo":"2026-07-27 11:37:55","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":80.8,"temp_ingreso":18.0,"temp_prod":7.03000020980835,"niv_agua":1860.0}
+{"id_historial":35,"tiempo":"2026-07-27 11:37:56","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.1,"temp_ingreso":18.0,"temp_prod":7.21999979019165,"niv_agua":1895.0}
+{"id_historial":36,"tiempo":"2026-07-27 11:37:57","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.1,"temp_ingreso":18.0,"temp_prod":7.420000076293945,"niv_agua":1930.0}
+{"id_historial":37,"tiempo":"2026-07-27 11:37:58","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":80.2,"temp_ingreso":18.0,"temp_prod":7.639999866485596,"niv_agua":1965.0}
+{"id_historial":38,"tiempo":"2026-07-27 11:37:59","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.2,"temp_ingreso":18.0,"temp_prod":7.880000114440918,"niv_agua":1969.0}
+{"id_historial":39,"tiempo":"2026-07-27 11:38:00","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":80.2,"temp_ingreso":18.0,"temp_prod":8.140000343322754,"niv_agua":1937.8}
+{"id_historial":40,"tiempo":"2026-07-27 11:38:01","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.8,"temp_ingreso":18.0,"temp_prod":8.420000076293945,"niv_agua":1999.6}
+{"id_historial":41,"tiempo":"2026-07-27 11:38:02","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.8,"temp_ingreso":18.0,"temp_prod":8.720000267028809,"niv_agua":1941.2}
+{"id_historial":42,"tiempo":"2026-07-27 11:38:03","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":80.9,"temp_ingreso":18.0,"temp_prod":9.050000190734863,"niv_agua":1960.5}
+{"id_historial":43,"tiempo":"2026-07-27 11:38:04","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.4,"temp_ingreso":18.0,"temp_prod":9.789999961853027,"niv_agua":1974.2}
+{"id_historial":44,"tiempo":"2026-07-27 11:38:05","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.4,"temp_ingreso":18.0,"temp_prod":10.210000038146973,"niv_agua":1993.1}
+{"id_historial":45,"tiempo":"2026-07-27 11:38:06","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.1,"temp_ingreso":18.0,"temp_prod":10.65999984741211,"niv_agua":1977.9}
+{"id_historial":46,"tiempo":"2026-07-27 11:38:07","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.3,"temp_ingreso":18.0,"temp_prod":11.149999618530273,"niv_agua":1937.1}
+{"id_historial":47,"tiempo":"2026-07-27 11:38:08","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.1,"temp_ingreso":18.0,"temp_prod":11.670000076293945,"niv_agua":1997.2}
+{"id_historial":48,"tiempo":"2026-07-27 11:38:10","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.1,"temp_ingreso":18.0,"temp_prod":12.239999771118164,"niv_agua":1923.2}
+{"id_historial":49,"tiempo":"2026-07-27 11:38:11","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.5,"temp_ingreso":18.0,"temp_prod":12.84000015258789,"niv_agua":1938.1}
+{"id_historial":50,"tiempo":"2026-07-27 11:38:12","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.1,"temp_ingreso":18.0,"temp_prod":13.489999771118164,"niv_agua":1929.0}
+{"id_historial":51,"tiempo":"2026-07-27 11:38:13","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.7,"temp_ingreso":18.0,"temp_prod":14.1899995803833,"niv_agua":1962.1}
+{"id_historial":52,"tiempo":"2026-07-27 11:38:14","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.4,"temp_ingreso":18.0,"temp_prod":14.930000305175781,"niv_agua":1995.4}
+{"id_historial":53,"tiempo":"2026-07-27 11:38:15","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.7,"temp_ingreso":18.0,"temp_prod":15.720000267028809,"niv_agua":1979.5}
+{"id_historial":54,"tiempo":"2026-07-27 11:38:16","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.8,"temp_ingreso":18.0,"temp_prod":16.559999465942383,"niv_agua":1988.0}
+{"id_historial":55,"tiempo":"2026-07-27 11:38:17","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.3,"temp_ingreso":18.0,"temp_prod":17.459999084472656,"niv_agua":1951.2}
+{"id_historial":56,"tiempo":"2026-07-27 11:38:18","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.1,"temp_ingreso":18.0,"temp_prod":18.40999984741211,"niv_agua":1904.7}
+{"id_historial":57,"tiempo":"2026-07-27 11:38:19","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.9,"temp_ingreso":18.0,"temp_prod":19.40999984741211,"niv_agua":1949.2}
+{"id_historial":58,"tiempo":"2026-07-27 11:38:20","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.0,"temp_ingreso":18.0,"temp_prod":20.469999313354492,"niv_agua":1944.2}
+{"id_historial":59,"tiempo":"2026-07-27 11:38:21","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.7,"temp_ingreso":18.0,"temp_prod":21.579999923706055,"niv_agua":1948.3}
+{"id_historial":60,"tiempo":"2026-07-27 11:38:22","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.7,"temp_ingreso":18.0,"temp_prod":22.75,"niv_agua":1939.9}
+{"id_historial":61,"tiempo":"2026-07-27 11:38:23","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":81.9,"temp_ingreso":18.0,"temp_prod":23.959999084472656,"niv_agua":1998.7}
+{"id_historial":62,"tiempo":"2026-07-27 11:38:24","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.3,"temp_ingreso":18.0,"temp_prod":25.229999542236328,"niv_agua":1994.8}
+{"id_historial":63,"tiempo":"2026-07-27 11:38:26","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.2,"temp_ingreso":18.0,"temp_prod":27.920000076293945,"niv_agua":1905.8}
+{"id_historial":64,"tiempo":"2026-07-27 11:38:27","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.1,"temp_ingreso":18.0,"temp_prod":29.329999923706055,"niv_agua":1964.6}
+{"id_historial":65,"tiempo":"2026-07-27 11:38:28","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.9,"temp_ingreso":18.0,"temp_prod":30.770000457763672,"niv_agua":1918.3}
+{"id_historial":66,"tiempo":"2026-07-27 11:38:29","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":83.1,"temp_ingreso":18.0,"temp_prod":32.2599983215332,"niv_agua":1908.3}
+{"id_historial":67,"tiempo":"2026-07-27 11:38:30","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":83.6,"temp_ingreso":18.0,"temp_prod":33.77000045776367,"niv_agua":1987.4}
+{"id_historial":68,"tiempo":"2026-07-27 11:38:31","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":83.2,"temp_ingreso":18.0,"temp_prod":35.29999923706055,"niv_agua":1975.5}
+{"id_historial":69,"tiempo":"2026-07-27 11:38:32","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.9,"temp_ingreso":18.0,"temp_prod":36.86000061035156,"niv_agua":1993.9}
+{"id_historial":70,"tiempo":"2026-07-27 11:38:33","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":83.8,"temp_ingreso":18.0,"temp_prod":38.43000030517578,"niv_agua":1916.3}
+{"id_historial":71,"tiempo":"2026-07-27 11:38:34","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.3,"temp_ingreso":18.0,"temp_prod":40.0,"niv_agua":1941.0}
+{"id_historial":72,"tiempo":"2026-07-27 11:38:35","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.6,"temp_ingreso":18.0,"temp_prod":41.56999969482422,"niv_agua":1965.9}
+{"id_historial":73,"tiempo":"2026-07-27 11:38:36","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":83.1,"temp_ingreso":18.0,"temp_prod":43.13999938964844,"niv_agua":1933.1}
+{"id_historial":74,"tiempo":"2026-07-27 11:38:37","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.7,"temp_ingreso":18.0,"temp_prod":44.70000076293945,"niv_agua":1993.2}
+{"id_historial":75,"tiempo":"2026-07-27 11:38:39","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":83.9,"temp_ingreso":18.0,"temp_prod":47.7400016784668,"niv_agua":1999.6}
+{"id_historial":76,"tiempo":"2026-07-27 11:38:40","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":83.9,"temp_ingreso":18.0,"temp_prod":49.22999954223633,"niv_agua":1922.8}
+{"id_historial":77,"tiempo":"2026-07-27 11:38:41","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":82.7,"temp_ingreso":18.0,"temp_prod":50.66999816894531,"niv_agua":1956.9}
+{"id_historial":78,"tiempo":"2026-07-27 11:38:42","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":83.2,"temp_ingreso":18.0,"temp_prod":52.08000183105469,"niv_agua":1907.7}
+{"id_historial":79,"tiempo":"2026-07-27 11:38:43","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":84.8,"temp_ingreso":18.0,"temp_prod":53.45000076293945,"niv_agua":1938.2}
+{"id_historial":80,"tiempo":"2026-07-27 11:38:44","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":84.7,"temp_ingreso":18.0,"temp_prod":54.77000045776367,"niv_agua":1925.5}
+{"id_historial":81,"tiempo":"2026-07-27 11:38:45","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":84.6,"temp_ingreso":18.0,"temp_prod":56.040000915527344,"niv_agua":1901.5}
+{"id_historial":82,"tiempo":"2026-07-27 11:38:46","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":84.9,"temp_ingreso":18.0,"temp_prod":57.25,"niv_agua":1941.2}
+{"id_historial":83,"tiempo":"2026-07-27 11:38:47","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":83.2,"temp_ingreso":18.0,"temp_prod":58.41999816894531,"niv_agua":1972.5}
+{"id_historial":84,"tiempo":"2026-07-27 11:38:49","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":84.7,"temp_ingreso":18.0,"temp_prod":60.59000015258789,"niv_agua":1920.8}
+{"id_historial":85,"tiempo":"2026-07-27 11:39:08","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":86.0,"temp_ingreso":18.0,"temp_prod":72.12000274658203,"niv_agua":1924.7}
+{"id_historial":86,"tiempo":"2026-07-27 11:39:09","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":86.4,"temp_ingreso":18.0,"temp_prod":72.36000061035156,"niv_agua":1980.2}
+{"id_historial":87,"tiempo":"2026-07-27 11:39:11","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":85.2,"temp_ingreso":18.0,"temp_prod":72.58000183105469,"niv_agua":1908.9}
+{"id_historial":88,"tiempo":"2026-07-27 11:39:12","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":85.0,"temp_ingreso":18.0,"temp_prod":72.77999877929688,"niv_agua":1907.0}
+{"id_historial":89,"tiempo":"2026-07-27 11:39:13","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":86.8,"temp_ingreso":18.0,"temp_prod":72.97000122070312,"niv_agua":1977.3}
+{"id_historial":90,"tiempo":"2026-07-27 11:39:14","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":86.5,"temp_ingreso":18.0,"temp_prod":73.13999938964844,"niv_agua":1915.3}
+{"id_historial":91,"tiempo":"2026-07-27 11:39:15","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":85.9,"temp_ingreso":18.0,"temp_prod":73.29000091552734,"niv_agua":1973.1}
+{"id_historial":92,"tiempo":"2026-07-27 11:39:16","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":86.6,"temp_ingreso":18.0,"temp_prod":73.44000244140625,"niv_agua":1950.2}
+{"id_historial":93,"tiempo":"2026-07-27 11:39:17","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":85.9,"temp_ingreso":18.0,"temp_prod":73.56999969482422,"niv_agua":1908.2}
+{"id_historial":94,"tiempo":"2026-07-27 11:39:18","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":87.0,"temp_ingreso":18.0,"temp_prod":73.69000244140625,"niv_agua":1975.5}
+{"id_historial":95,"tiempo":"2026-07-27 11:39:20","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":86.5,"temp_ingreso":18.0,"temp_prod":73.9000015258789,"niv_agua":1986.8}
+{"id_historial":96,"tiempo":"2026-07-27 11:39:21","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":86.4,"temp_ingreso":18.0,"temp_prod":74.0,"niv_agua":1997.2}
+{"id_historial":97,"tiempo":"2026-07-27 11:39:22","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":86.9,"temp_ingreso":18.0,"temp_prod":74.08000183105469,"niv_agua":1990.3}
+{"id_historial":98,"tiempo":"2026-07-27 11:39:51","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":89.37999725341797,"temp_ingreso":18.0,"temp_prod":74.93000030517578,"niv_agua":1921.8699951171875}
+{"id_historial":99,"tiempo":"2026-07-27 11:39:53","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":89.69000244140625,"temp_ingreso":18.0,"temp_prod":74.94000244140625,"niv_agua":1974.1800537109375}
+{"id_historial":100,"tiempo":"2026-07-27 11:39:54","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":88.27999877929688,"temp_ingreso":18.0,"temp_prod":74.94000244140625,"niv_agua":1923.8900146484375}
+{"id_historial":101,"tiempo":"2026-07-27 11:39:55","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":88.62000274658203,"temp_ingreso":18.0,"temp_prod":74.94999694824219,"niv_agua":1913.3399658203125}
+{"id_historial":102,"tiempo":"2026-07-27 11:39:56","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":88.41000366210938,"temp_ingreso":18.0,"temp_prod":74.94999694824219,"niv_agua":1944.31005859375}
+{"id_historial":103,"tiempo":"2026-07-27 11:39:57","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":89.81999969482422,"temp_ingreso":18.0,"temp_prod":74.95999908447266,"niv_agua":1990.4000244140625}
+{"id_historial":104,"tiempo":"2026-07-27 11:39:58","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":89.08999633789062,"temp_ingreso":18.0,"temp_prod":74.95999908447266,"niv_agua":1986.27001953125}
+{"id_historial":105,"tiempo":"2026-07-27 11:39:59","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":88.44999694824219,"temp_ingreso":18.0,"temp_prod":74.97000122070312,"niv_agua":1967.9000244140625}
+{"id_historial":106,"tiempo":"2026-07-27 11:40:00","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":88.97000122070312,"temp_ingreso":18.0,"temp_prod":74.97000122070312,"niv_agua":1989.8199462890625}
+{"id_historial":107,"tiempo":"2026-07-27 11:40:01","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":88.72000122070312,"temp_ingreso":18.0,"temp_prod":74.97000122070312,"niv_agua":1995.6199951171875}
+{"id_historial":108,"tiempo":"2026-07-27 11:40:02","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":90.18000030517578,"temp_ingreso":18.0,"temp_prod":74.97000122070312,"niv_agua":1961.6099853515625}
+{"id_historial":109,"tiempo":"2026-07-27 11:40:03","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":89.5,"temp_ingreso":18.0,"temp_prod":74.9800033569336,"niv_agua":1957.469970703125}
+{"id_historial":110,"tiempo":"2026-07-27 11:40:04","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":89.25,"temp_ingreso":18.0,"temp_prod":74.9800033569336,"niv_agua":1945.52001953125}
+{"id_historial":111,"tiempo":"2026-07-27 11:40:05","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":90.37999725341797,"temp_ingreso":18.0,"temp_prod":74.9800033569336,"niv_agua":1931.5}
+{"id_historial":112,"tiempo":"2026-07-27 11:40:06","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":90.5999984741211,"temp_ingreso":18.0,"temp_prod":74.9800033569336,"niv_agua":1978.27001953125}
+{"id_historial":113,"tiempo":"2026-07-27 11:40:07","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":90.5,"temp_ingreso":18.0,"temp_prod":74.9800033569336,"niv_agua":1964.8800048828125}
+{"id_historial":114,"tiempo":"2026-07-27 11:40:08","estado":"OPERACIONAL","idCiclo":1595,"lote":"COC-03-C0033","temp_agua":90.25,"temp_ingreso":18.0,"temp_prod":74.98999786376953,"niv_agua":1997.75}
