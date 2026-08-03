@@ -228,7 +228,7 @@ class ObtenerNodosOpcUA:
     }
 
     ESTADOS_CONTINUOS = {"PRE OPERACIONAL", "OPERACIONAL", "PAUSADO"}
-    ESTADOS_FIN       = {"FINALIZADO", "CANCELADO"}
+    ESTADOS_FIN       = {"FINALIZADO", "CANCELADO", "INACTIVO"}
 
     def __init__(self, conexion_servidor):
         self.conexion_servidor  = conexion_servidor
