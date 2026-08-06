@@ -16,7 +16,6 @@ y transmitirla a los clientes mediante **WebSockets**.
 - [Endpoints](#endpoints)
 - [Instalación y ejecución](#instalación-y-ejecución)
 - [Despliegue con Docker](#despliegue-con-docker)
-- [Notas de operación](#notas-de-operación)
 
 ---
 
@@ -196,21 +195,3 @@ El `docker-compose.yml` levanta tres servicios sobre dos redes (`bridge` y
 docker compose up -d --build
 ```
 
-## Notas de operación
-
-- **Reconexión OPC**: `monitor_opc` hace *ping* cada 10s; si falla, intenta
-  `reconnect()` y vuelve a suscribir los nodos sin reiniciar el proceso.
-- **Resiliencia del buffer JSONL**: cada ciclo activo escribe su historial
-  en un archivo `.jsonl`. Al cerrar el ciclo, el archivo se renombra a
-  `.processing`, se valida y filtra, se persiste en BD en una única
-  transacción y recién después se archiva como `.done`. Si el proceso se
-  cae a mitad de camino, al reiniciar se detecta el `.jsonl`/`.processing`
-  pendiente y se reintenta el cierre de forma idempotente.
-- **Filtrado de históricos**: las temperaturas se guardan con una ventana
-  móvil de 10 muestras, umbral de cambio de 0.5° y persistencia de 3
-  confirmaciones (o cada 300s como máximo), para no saturar `sensoresaa`
-  con ruido de lectura.
-- **CORS**: habilitado sin restricciones (`allow_origins=["*"]`); ajustar
-  según el entorno de despliegue final.
-
----

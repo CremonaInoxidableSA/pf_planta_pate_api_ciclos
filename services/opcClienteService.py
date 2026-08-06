@@ -1,6 +1,7 @@
-from sqlalchemy.orm import Session
-from datetime import datetime
+from sqlalchemy.orm import Session, sessionmaker
+from datetime import datetime, timedelta
 from collections import defaultdict, deque
+from contextlib import contextmanager
 from statistics import mean
 from models.ciclo import Ciclo
 from models.receta import Receta
@@ -15,7 +16,10 @@ import asyncio
 import math
 import threading
 
-from config.db import get_db
+# Se importa el modulo completo, no solamente el engine, para poder leer
+# config.db.engine en cada operacion. Despues de una reconexion de MySQL el
+# modulo publica un engine nuevo y las sesiones deben vincularse a ese.
+from config import db as config_db
 
 logger = logging.getLogger("uvicorn")
 
@@ -94,7 +98,7 @@ AA_SENSOR_MAP: dict[str, int] = {
 CAMPOS_TEMPERATURA = ("temp_agua", "temp_ingreso", "temp_prod")
 CAMPOS_HISTORIAL = (
     "id_historial", "tiempo", "estado", "idCiclo", "lote",
-    "temp_agua", "temp_ingreso", "temp_prod", "niv_agua",
+    "tiempo_trans_opc", "temp_agua", "temp_ingreso", "temp_prod", "niv_agua",
 )
 
 UMBRAL_CAMBIO = 0.5
@@ -102,6 +106,12 @@ VENTANA_PROMEDIO_SEGUNDOS = 10
 PERSISTENCIA_REQUERIDA = 3
 TIEMPO_MAXIMO_SEGUNDOS = 300
 HISTORIAL_PREVIEW_MAX = 100
+
+# Un hueco mayor a este umbral entre dos capturas consecutivas no se atribuye
+# al ultimo estado conocido: se registra como un tramo propio. La captura
+# normal es de aproximadamente una muestra por segundo.
+HUECO_SIN_DATOS_SEGUNDOS = 5
+ESTADO_SIN_DATOS = "SIN DATOS / DESCONEXION"
 
 
 # -----------------------------------------------------------------------
@@ -148,15 +158,38 @@ def _delta_str(inicio: datetime, fin: datetime) -> str:
     return f"{h:02}:{m:02}:{s:02}"
 
 
-def _construir_tramos_estado(historial: list) -> list[dict]:
-    """
-    Agrupa filas consecutivas del mismo estado en tramos.
+def _tramo(nombre: str, inicio: datetime, fin: datetime) -> dict:
+    return {
+        "nombre":             nombre,
+        "fechaInicio":        inicio,
+        "fechaFin":           fin,
+        "tiempoTranscurrido": _delta_str(inicio, fin),
+    }
 
-    Maneja correctamente:
-    - Historial vac�o        -> []
-    - Una sola muestra       -> un tramo con fechaInicio == fechaFin
-    - Timestamps repetidos   -> el tramo se extiende sin error
-    - Timestamps fuera orden -> se ordenan antes de procesar
+
+def _construir_tramos_estado(
+    historial: list,
+    umbral_hueco_segundos: int = HUECO_SIN_DATOS_SEGUNDOS,
+) -> list[dict]:
+    """
+    Agrupa filas consecutivas del mismo estado en tramos e intercala tramos
+    ESTADO_SIN_DATOS cuando la distancia entre dos capturas consecutivas supera
+    umbral_hueco_segundos.
+
+    Un hueco NO se atribuye al ultimo estado conocido: el intervalo faltante se
+    registra como periodo sin datos, de modo que una desconexion no se informe
+    como tiempo productivo ni se confunda con PAUSADO.
+
+    Maneja:
+    - Historial vacio         -> []
+    - Una sola muestra        -> un tramo con fechaInicio == fechaFin
+    - Timestamps repetidos    -> el tramo se extiende sin error
+    - Timestamps fuera orden  -> se ordenan antes de procesar
+    - Huecos largos           -> tramo ESTADO_SIN_DATOS intercalado
+
+    Los tramos generados no se solapan y son contiguos a ambos lados de cada
+    hueco: el tramo sin datos empieza exactamente en la ultima captura valida y
+    termina exactamente en la primera captura posterior.
 
     Retorna:
         [
@@ -188,26 +221,64 @@ def _construir_tramos_estado(historial: list) -> list[dict]:
     for fila in ordenado[1:]:
         t      = _parse_tiempo(fila["tiempo"])
         nombre = fila["estado"]
+
+        # El historial ya esta ordenado, pero un timestamp repetido produce
+        # hueco 0 y nunca un intervalo negativo.
+        hueco = (t - fin_actual).total_seconds()
+
+        if hueco > umbral_hueco_segundos:
+            # Cerrar el estado observado y registrar el intervalo faltante.
+            tramos.append(_tramo(nombre_actual, inicio_actual, fin_actual))
+            tramos.append(_tramo(ESTADO_SIN_DATOS, fin_actual, t))
+            nombre_actual = nombre
+            inicio_actual = t
+            fin_actual    = t
+            continue
+
         if nombre == nombre_actual:
-            fin_actual = t
+            if t > fin_actual:
+                fin_actual = t
         else:
-            tramos.append({
-                "nombre":             nombre_actual,
-                "fechaInicio":        inicio_actual,
-                "fechaFin":           fin_actual,
-                "tiempoTranscurrido": _delta_str(inicio_actual, fin_actual),
-            })
+            tramos.append(_tramo(nombre_actual, inicio_actual, fin_actual))
             nombre_actual = nombre
             inicio_actual = t
             fin_actual    = t
 
-    # �ltimo tramo (siempre existe)
-    tramos.append({
-        "nombre":             nombre_actual,
-        "fechaInicio":        inicio_actual,
-        "fechaFin":           fin_actual,
-        "tiempoTranscurrido": _delta_str(inicio_actual, fin_actual),
-    })
+    # Ultimo tramo (siempre existe)
+    tramos.append(_tramo(nombre_actual, inicio_actual, fin_actual))
+    return tramos
+
+
+def _cerrar_tramos_hasta(
+    tramos: list,
+    fecha_fin: datetime,
+    umbral_hueco_segundos: int = HUECO_SIN_DATOS_SEGUNDOS,
+) -> list:
+    """
+    Lleva la lista de tramos hasta la fecha de cierre oficial del ciclo.
+
+    Si entre la ultima captura y el cierre pasaron mas de umbral_hueco_segundos,
+    ese intervalo se registra como ESTADO_SIN_DATOS en vez de estirar el ultimo
+    estado observado. Si la diferencia es normal (el historial termina un par de
+    segundos antes del cierre), el ultimo tramo simplemente se extiende.
+    """
+    if not tramos:
+        return tramos
+
+    ultimo = tramos[-1]
+    if fecha_fin <= ultimo["fechaFin"]:
+        return tramos
+
+    hueco = (fecha_fin - ultimo["fechaFin"]).total_seconds()
+    if hueco > umbral_hueco_segundos:
+        tramos.append(
+            _tramo(ESTADO_SIN_DATOS, ultimo["fechaFin"], fecha_fin)
+        )
+    else:
+        ultimo["fechaFin"] = fecha_fin
+        ultimo["tiempoTranscurrido"] = _delta_str(
+            ultimo["fechaInicio"], fecha_fin
+        )
     return tramos
 
 
@@ -230,9 +301,26 @@ class ObtenerNodosOpcUA:
     ESTADOS_CONTINUOS = {"PRE OPERACIONAL", "OPERACIONAL", "PAUSADO"}
     ESTADOS_FIN       = {"FINALIZADO", "CANCELADO", "INACTIVO"}
 
+    RECON_SIN_HISTORIAL = "SIN_HISTORIAL"
+    RECON_MISMO_CICLO   = "MISMO_CICLO"
+    RECON_NUEVO_CICLO   = "NUEVO_CICLO"
+    RECON_CONFIRMAR_TT   = "CONFIRMAR_TT"
+    RECON_INDETERMINADA  = "INDETERMINADA"
+
     def __init__(self, conexion_servidor):
         self.conexion_servidor  = conexion_servidor
-        self.session = next(get_db())
+
+        # ---------------------------------------------------------------
+        # Sesiones SQLAlchemy
+        #
+        # Ya no existe una sesion unica de larga vida: se abre una por
+        # operacion y se cierra siempre. La fabrica se reconstruye cuando
+        # config.db publica un engine nuevo (reconexion de MySQL), de modo
+        # que la adquisicion se recupera sin reiniciar el contenedor.
+        # ---------------------------------------------------------------
+        self._session_factory = None
+        self._session_engine = None
+        self._session_factory_lock = threading.RLock()
 
         self._equipos: list[dict] = []
         self._recetario_cache: dict = {}
@@ -271,12 +359,72 @@ class ObtenerNodosOpcUA:
         self._jsonl_last_time: dict[str, str] = {}
         self._jsonl_last_record: dict[str, dict] = {}
 
+        # Reconciliacion por TIEMPO_TRANS. El numero de generacion cambia al
+        # crear cada suscripcion y permite distinguir los valores recibidos
+        # despues de una reconexion de los que pertenecian a la anterior.
+        self._subscription_generation = 0
+        self._equipos_pendientes_reconciliacion: set[str] = set()
+        self._tt_retrocesos: dict[str, dict] = {}
+        self._advertencias_reconciliacion: set[tuple] = set()
+
         os.makedirs(self._jsonl_dir, exist_ok=True)
         self._informar_archivos_pendientes()
 
-    def __del__(self):
-        session = getattr(self, "session", None)
-        if session is not None:
+    # -----------------------------------------------------------------------
+    # Sesiones SQLAlchemy
+    # -----------------------------------------------------------------------
+
+    def _fabrica_de_sesiones(self):
+        """
+        Devuelve una sessionmaker vinculada al engine vigente.
+
+        Se compara la identidad del engine publicado por config.db en lugar de
+        cachearlo para siempre. Cuando el monitor de conexion reemplaza el
+        engine despues de una caida de MySQL, la fabrica se reconstruye sola en
+        la siguiente operacion.
+        """
+        engine_actual = getattr(config_db, "engine", None)
+        if engine_actual is None:
+            raise RuntimeError(
+                "El engine de MySQL todavia no esta disponible"
+            )
+
+        with self._session_factory_lock:
+            if (
+                self._session_factory is None
+                or self._session_engine is not engine_actual
+            ):
+                self._session_factory = sessionmaker(
+                    autocommit=False,
+                    autoflush=False,
+                    bind=engine_actual,
+                )
+                self._session_engine = engine_actual
+                logger.info(
+                    "Fabrica de sesiones SQLAlchemy vinculada al engine "
+                    "vigente de config.db."
+                )
+            return self._session_factory
+
+    @contextmanager
+    def _sesion_bd(self):
+        """
+        Abre una sesion para una operacion y la cierra siempre.
+
+        Ante una excepcion se ejecuta rollback antes de cerrar, de modo que
+        ninguna transaccion queda abierta ocupando una conexion del pool.
+        """
+        fabrica = self._fabrica_de_sesiones()
+        session: Session = fabrica()
+        try:
+            yield session
+        except Exception:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
             try:
                 session.close()
             except Exception:
@@ -464,6 +612,18 @@ class ObtenerNodosOpcUA:
                     "No se pudo crear la suscripci�n OPC UA"
                 )
 
+            self._subscription_generation += 1
+            self._equipos_pendientes_reconciliacion = {
+                self._clave_equipo(
+                    equipo["linea"],
+                    equipo["tipo"],
+                    equipo["numero_local"],
+                )
+                for equipo in self._equipos
+            }
+            self._tt_retrocesos.clear()
+            self._advertencias_reconciliacion.clear()
+
         except Exception:
             # Nunca dejar equipos o nodos parcialmente navegados.
             self._equipos = []
@@ -512,6 +672,177 @@ class ObtenerNodosOpcUA:
         except Exception:
             return str(estado_raw).strip().upper()
         return self.ESTADOS_EQUIPO_MAP.get(estado_raw, f"DESCONOCIDO_{estado_raw}")
+
+    @staticmethod
+    def _clave_equipo(linea: str, tipo: str, numero_local: int) -> str:
+        return f"{linea}-{tipo}-{int(numero_local)}"
+
+    @staticmethod
+    def _normalizar_tiempo_trans(valor) -> int | None:
+        """
+        Convierte TIEMPO_TRANS a minutos enteros.
+
+        En este proyecto el PLC entrega un entero cuya unidad ya es minutos:
+        10 significa diez minutos. Para compatibilidad tambien se admiten
+        timedelta y cadenas HH:MM:SS; en esos dos casos se conservan solamente
+        los minutos completos. No se infiere la unidad por el tamano del valor.
+        """
+        if valor is None or isinstance(valor, bool):
+            return None
+
+        if isinstance(valor, timedelta):
+            segundos = valor.total_seconds()
+            if not math.isfinite(segundos) or segundos < 0:
+                return None
+            return int(segundos // 60)
+
+        if isinstance(valor, str):
+            texto = valor.strip()
+            if not texto:
+                return None
+            if ":" in texto:
+                partes = texto.split(":")
+                if len(partes) != 3:
+                    return None
+                try:
+                    horas = int(partes[0])
+                    minutos = int(partes[1])
+                    segundos = float(partes[2])
+                except (TypeError, ValueError):
+                    return None
+                if (
+                    horas < 0
+                    or minutos < 0
+                    or minutos >= 60
+                    or segundos < 0
+                    or segundos >= 60
+                    or not math.isfinite(segundos)
+                ):
+                    return None
+                return int((horas * 3600 + minutos * 60 + segundos) // 60)
+            valor = texto
+
+        try:
+            numero = float(valor)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(numero) or numero < 0 or not numero.is_integer():
+            return None
+        return int(numero)
+
+    def _advertir_reconciliacion_una_vez(
+        self,
+        equipo_key: str,
+        codigo: str,
+        mensaje: str,
+    ) -> None:
+        token = (self._subscription_generation, equipo_key, codigo)
+        if token in self._advertencias_reconciliacion:
+            return
+        self._advertencias_reconciliacion.add(token)
+        logger.warning(mensaje)
+
+    def _datos_reconciliacion_frescos(
+        self,
+        equipo: dict,
+        datos: dict,
+        equipo_key: str,
+    ) -> tuple[str, int] | None:
+        """
+        Valida la fotografia minima necesaria para operar un ciclo.
+
+        iniciar_suscripcion() limpia el cache antes de crear la nueva
+        suscripcion. Por eso, que ambos node_id vuelvan a estar presentes en el
+        cache demuestra que ESTADO_EQUIPO y TIEMPO_TRANS fueron recibidos en la
+        generacion actual y no quedaron de una conexion anterior.
+        """
+        if not self.conexion_servidor.connected:
+            return None
+
+        node_map = equipo.get("node_map", {})
+        cache = self.conexion_servidor.handler.get_all()
+        faltantes = []
+        for campo in ("ESTADO_EQUIPO", "TIEMPO_TRANS"):
+            node_id = node_map.get(campo)
+            if not node_id or node_id not in cache:
+                faltantes.append(campo)
+
+        if faltantes:
+            self._advertir_reconciliacion_una_vez(
+                equipo_key,
+                "CAMPOS_FRESCOS",
+                f"[{equipo_key}] Esperando datos OPC frescos de "
+                f"{', '.join(faltantes)} para la suscripcion "
+                f"{self._subscription_generation}.",
+            )
+            return None
+
+        estado_actual = self._estado_a_texto(datos.get("ESTADO_EQUIPO"))
+        estados_validos = set(self.ESTADOS_EQUIPO_MAP.values())
+        if estado_actual not in estados_validos:
+            self._advertir_reconciliacion_una_vez(
+                equipo_key,
+                f"ESTADO_{estado_actual}",
+                f"[{equipo_key}] ESTADO_EQUIPO no permite reconciliar un "
+                f"ciclo: {estado_actual!r}.",
+            )
+            return None
+
+        tt_actual = self._normalizar_tiempo_trans(datos.get("TIEMPO_TRANS"))
+        if tt_actual is None:
+            self._advertir_reconciliacion_una_vez(
+                equipo_key,
+                "TT_INVALIDO",
+                f"[{equipo_key}] TIEMPO_TRANS invalido. Se conserva cualquier "
+                "JSONL pendiente y no se escriben muestras.",
+            )
+            return None
+
+        return estado_actual, tt_actual
+
+    def _leer_confirmacion_tt_directa(
+        self,
+        equipo: dict,
+        equipo_key: str,
+    ) -> tuple[str, int] | None:
+        """
+        Confirma un posible retroceso con lecturas OPC de red, no repitiendo la
+        misma fotografia del cache. Solo se usa para la segunda observacion de
+        un TT menor, por lo que no agrega lecturas directas al flujo normal.
+
+        Es sincrona a proposito: se invoca desde _procesar_equipo, que ya se
+        ejecuta fuera del event loop.
+        """
+        if not self.conexion_servidor.connected:
+            return None
+
+        node_map = equipo.get("node_map", {})
+        estado_node_id = node_map.get("ESTADO_EQUIPO")
+        tt_node_id = node_map.get("TIEMPO_TRANS")
+        if not estado_node_id or not tt_node_id:
+            return None
+
+        try:
+            estado_raw = self.conexion_servidor.read_node(estado_node_id)
+            tt_raw = self.conexion_servidor.read_node(tt_node_id)
+        except Exception as exc:
+            self._advertir_reconciliacion_una_vez(
+                equipo_key,
+                "CONFIRMACION_DIRECTA",
+                f"[{equipo_key}] No se pudo confirmar el reinicio de "
+                f"TIEMPO_TRANS mediante lectura directa: {exc}. Se mantiene "
+                "el JSONL sin cambios.",
+            )
+            return None
+
+        estado_actual = self._estado_a_texto(estado_raw)
+        tt_actual = self._normalizar_tiempo_trans(tt_raw)
+        if (
+            estado_actual not in set(self.ESTADOS_EQUIPO_MAP.values())
+            or tt_actual is None
+        ):
+            return None
+        return estado_actual, tt_actual
 
     def _slugs_equipo(self, linea, tipo, numero_local):
         linea_slug = "l1" if linea == "PF-L1" else "l2"
@@ -566,7 +897,14 @@ class ObtenerNodosOpcUA:
         if not isinstance(registro, dict):
             raise ValueError(f"{contexto}: el registro no es un objeto JSON")
 
-        faltantes = [campo for campo in CAMPOS_HISTORIAL if campo not in registro]
+        # tiempo_trans_opc es obligatorio para registros nuevos, pero se acepta
+        # ausente al leer JSONL creados por versiones anteriores. Esos archivos
+        # se conservan y su reconciliacion queda bloqueada de forma segura.
+        faltantes = [
+            campo
+            for campo in CAMPOS_HISTORIAL
+            if campo != "tiempo_trans_opc" and campo not in registro
+        ]
         if faltantes:
             raise ValueError(f"{contexto}: faltan campos {faltantes}")
 
@@ -592,12 +930,26 @@ class ObtenerNodosOpcUA:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{contexto}: idCiclo invalido") from exc
 
+        tiempo_trans_opc = self._normalizar_tiempo_trans(
+            registro.get("tiempo_trans_opc")
+        )
+        if (
+            "tiempo_trans_opc" in registro
+            and registro.get("tiempo_trans_opc") is not None
+            and tiempo_trans_opc is None
+        ):
+            raise ValueError(
+                f"{contexto}: tiempo_trans_opc debe ser una cantidad valida "
+                "de minutos enteros"
+            )
+
         limpio = {
             "id_historial": id_historial,
             "tiempo": tiempo,
             "estado": str(registro.get("estado") or "").strip().upper(),
             "idCiclo": id_ciclo,
             "lote": str(registro.get("lote") or "").strip(),
+            "tiempo_trans_opc": tiempo_trans_opc,
             "temp_agua": _numero_finito_o_none(registro.get("temp_agua")),
             "temp_ingreso": _numero_finito_o_none(
                 registro.get("temp_ingreso")
@@ -760,6 +1112,14 @@ class ObtenerNodosOpcUA:
     def _agregar_registro_jsonl(self, archivo, registro):
         if not archivo.endswith(".jsonl"):
             raise ValueError(f"No se puede agregar sobre {archivo}")
+
+        if self._normalizar_tiempo_trans(
+            registro.get("tiempo_trans_opc")
+        ) is None:
+            raise ValueError(
+                "No se puede agregar un registro JSONL sin "
+                "tiempo_trans_opc valido"
+            )
 
         lock = self._jsonl_locks[archivo]
         with lock:
@@ -988,149 +1348,216 @@ class ObtenerNodosOpcUA:
         presentacion = []
         for registro in historial:
             fila = dict(registro)
+            # Campo interno de reconciliacion: no cambia el contrato existente
+            # del historial enviado al frontend.
+            fila.pop("tiempo_trans_opc", None)
             for campo in CAMPOS_TEMPERATURA:
                 fila[campo] = _redondear_para_presentacion(fila.get(campo))
             presentacion.append(fila)
         return presentacion
 
     # -----------------------------------------------------------------------
-    # Saneamiento del historial por cambio de lote
+    # Reconciliacion del historial por TIEMPO_TRANS
     # -----------------------------------------------------------------------
 
-    def _lote_del_historial(self, historial: list) -> str:
-        """
-        Devuelve el campo 'lote' de la �ltima fila del historial,
-        o cadena vac�a si el historial est� vac�o o no tiene ese campo.
-        """
-        if not historial:
-            return ""
-        return str(historial[-1].get("lote") or "").strip()
+    # LOTE_CICLO se conserva como dato informativo. La identidad y continuidad
+    # de los ciclos se resuelve exclusivamente en _reconciliar_historial_por_tt.
 
-    def _sanear_historial_por_lote(
+    def _reconciliar_historial_por_tt(
         self,
-        historial:         list,
-        lote_actual:       str,
-        estado_actual:     str,
-        id_equipo:         int,
-        archivo_historial: str,
-        equipo_key:        str,
-        linea:             str,
-        tipo:              str,
-        numero_local:      int,
-    ) -> list:
+        session: Session,
+        archivo_historial: str | None,
+        tt_actual: int,
+        estado_actual: str,
+        equipo_key: str,
+        linea: str,
+        tipo: str,
+        numero_local: int,
+    ) -> dict:
         """
-        Verifica si el historial JSONL corresponde al lote que el OPC informa
-        ahora. Si hay discrepancia, cierra el ciclo colgado con
-        finalizar_ciclo_completo() y devuelve [] para iniciar uno nuevo.
+        Decide si el JSONL pendiente y la fotografia OPC pertenecen al mismo
+        ciclo. LOTE_CICLO no participa de ninguna decision.
 
-        Tabla de decisi�n
-        \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-        historial vac�o             \u2192 devolver []   (nada que sanear)
-        lote_json vac�o             \u2192 devolver historial sin tocar
-                                      (no se puede comparar)
-        lote_actual vac�o           \u2192 devolver historial sin tocar
-                                      (OPC en estado transitorio)
-        lote_actual == lote_json    \u2192 devolver historial (continuaci�n ok)
-        lote_actual != lote_json    \u2192 CICLO COLGADO:
-                                        1. finalizar_ciclo_completo()
-                                        2. devolver []
-        \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        CONFIRMAR_TT e INDETERMINADA bloquean escrituras para el equipo, pero
+        conservan el archivo sin modificarlo.
+
+        Limitacion del dato disponible: si durante una desconexion empieza otro
+        ciclo y al volver su TT ya es mayor que el ultimo TT anterior, ambos son
+        indistinguibles sin un ID_CICLO_PLC o contador monotonicamente creciente.
         """
-        if not historial:
-            return historial
+        if not archivo_historial:
+            self._tt_retrocesos.pop(equipo_key, None)
+            self._equipos_pendientes_reconciliacion.discard(equipo_key)
+            return {
+                "decision": self.RECON_SIN_HISTORIAL,
+                "id_ciclo": None,
+                "archivo": None,
+                "historial": [],
+            }
 
-        # Un .processing indica que un cierre anterior no termino. Antes de
-        # permitir nuevas capturas se reintenta el cierre idempotente.
-        if archivo_historial.endswith(".processing"):
-            ultimo = historial[-1]
-            id_ciclo_pendiente = ultimo.get("idCiclo")
-            if not id_ciclo_pendiente:
-                raise RuntimeError(
-                    f"Archivo .processing sin idCiclo: {archivo_historial}"
-                )
-            estado_json = ultimo.get("estado", "CANCELADO")
-            estado_cierre = (
-                estado_json
-                if estado_json in self.ESTADOS_FIN
-                else "CANCELADO"
+        historial = self._obtener_preview_jsonl(archivo_historial)
+        ultimo = self._ultimo_registro_del_archivo(archivo_historial)
+        if not ultimo:
+            self._advertir_reconciliacion_una_vez(
+                equipo_key,
+                "JSONL_VACIO",
+                f"[{linea}/{tipo}/{numero_local}] El JSONL pendiente esta "
+                "vacio. Se conserva y el equipo queda bloqueado.",
             )
-            if not self.finalizar_ciclo_completo(
-                id_ciclo=id_ciclo_pendiente,
+            return {
+                "decision": self.RECON_INDETERMINADA,
+                "id_ciclo": None,
+                "archivo": archivo_historial,
+                "historial": historial,
+            }
+
+        id_ciclo_anterior = int(ultimo["idCiclo"])
+        tt_anterior = self._normalizar_tiempo_trans(
+            ultimo.get("tiempo_trans_opc")
+        )
+        if tt_anterior is None:
+            self._advertir_reconciliacion_una_vez(
+                equipo_key,
+                "JSONL_SIN_TT",
+                f"[{linea}/{tipo}/{numero_local}] El JSONL del ciclo "
+                f"{id_ciclo_anterior} fue creado sin tiempo_trans_opc. "
+                "No se elimina, no se mezcla con lecturas nuevas y requiere "
+                "una decision manual.",
+            )
+            return {
+                "decision": self.RECON_INDETERMINADA,
+                "id_ciclo": id_ciclo_anterior,
+                "archivo": archivo_historial,
+                "historial": historial,
+            }
+
+        fecha_ultima_captura = _parse_tiempo(ultimo["tiempo"])
+
+        # Un .processing representa un cierre que ya habia comenzado. Nunca se
+        # vuelve a escribir sobre el; se reintenta el cierre idempotente.
+        if archivo_historial.endswith(".processing"):
+            mismo_ciclo_terminal = (
+                estado_actual in self.ESTADOS_FIN
+                and tt_actual >= tt_anterior
+            )
+            estado_cierre = (
+                estado_actual if mismo_ciclo_terminal else "CANCELADO"
+            )
+            fecha_forzada = (
+                None if mismo_ciclo_terminal else fecha_ultima_captura
+            )
+            ok = self.finalizar_ciclo_completo(
+                id_ciclo=id_ciclo_anterior,
                 estado_maquina=estado_cierre,
                 archivo_historial=archivo_historial,
                 equipo_key=equipo_key,
                 tipo=tipo,
-            ):
+                fecha_fin_forzada=fecha_forzada,
+                session=session,
+            )
+            if not ok:
                 raise RuntimeError(
-                    f"No se pudo recuperar {archivo_historial}"
+                    f"No se pudo recuperar {archivo_historial}; no se crean "
+                    "ni se mezclan ciclos nuevos"
                 )
-            return []
+            self._tt_retrocesos.pop(equipo_key, None)
+            self._equipos_pendientes_reconciliacion.discard(equipo_key)
+            return {
+                "decision": self.RECON_NUEVO_CICLO,
+                "id_ciclo": None,
+                "archivo": None,
+                "historial": [],
+            }
 
-        lote_json = self._lote_del_historial(historial)
+        if tt_actual >= tt_anterior:
+            self._tt_retrocesos.pop(equipo_key, None)
+            self._equipos_pendientes_reconciliacion.discard(equipo_key)
+            return {
+                "decision": self.RECON_MISMO_CICLO,
+                "id_ciclo": id_ciclo_anterior,
+                "archivo": archivo_historial,
+                "historial": historial,
+            }
 
-        if not lote_json:
-            logger.debug(
-                f"[{linea}/{tipo}/{numero_local}] Historial sin campo 'lote'. "
-                f"No se puede determinar cambio de lote."
-            )
-            return historial
-
-        if not lote_actual:
-            logger.debug(
-                f"[{linea}/{tipo}/{numero_local}] LOTE_CICLO OPC vac�o. "
-                f"Se mantiene historial de lote '{lote_json}' sin cerrar."
-            )
-            return historial
-
-        if lote_actual == lote_json:
-            return historial
-
-        # \u2500\u2500 Lote diferente \u2192 CICLO COLGADO \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-        logger.warning(
-            f"\033[1;33m[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
-            f"[{linea}/{tipo}/{numero_local}] CICLO COLGADO DETECTADO. "
-            f"Lote JSON='{lote_json}' vs OPC='{lote_actual}'. "
-            f"Cerrando ciclo viejo...\033[0m"
+        # TT menor: exigir dos observaciones consecutivas de la misma
+        # generacion de suscripcion antes de cerrar el historial anterior.
+        firma = (
+            self._subscription_generation,
+            os.path.abspath(archivo_historial),
+            id_ciclo_anterior,
+            tt_anterior,
         )
-
-        id_ciclo_viejo  = historial[-1].get("idCiclo")
-        estado_del_json = historial[-1].get("estado", "CANCELADO")
-        estado_cierre   = estado_del_json if estado_del_json in self.ESTADOS_FIN else "CANCELADO"
-
-        if id_ciclo_viejo:
-            ok = self.finalizar_ciclo_completo(
-                id_ciclo          = id_ciclo_viejo,
-                estado_maquina    = estado_cierre,
-                archivo_historial = archivo_historial,
-                equipo_key        = equipo_key,
-                tipo              = tipo,
-            )
-            if ok:
-                logger.info(
-                    f"[{linea}/{tipo}/{numero_local}] Ciclo colgado "
-                    f"{id_ciclo_viejo} cerrado con estado '{estado_cierre}'."
-                )
-            else:
-                raise RuntimeError(
-                    f"No se pudo cerrar el ciclo colgado {id_ciclo_viejo}; "
-                    "el JSONL se conserva y el equipo queda bloqueado"
-                )
+        retroceso = self._tt_retrocesos.get(equipo_key)
+        if not retroceso or retroceso.get("firma") != firma:
+            retroceso = {
+                "firma": firma,
+                "confirmaciones": 1,
+                "primer_tt_actual": tt_actual,
+            }
         else:
+            retroceso["confirmaciones"] += 1
+        retroceso["ultimo_tt_actual"] = tt_actual
+        self._tt_retrocesos[equipo_key] = retroceso
+
+        if retroceso["confirmaciones"] < 2:
+            self._advertir_reconciliacion_una_vez(
+                equipo_key,
+                f"RETROCESO_{id_ciclo_anterior}_{tt_anterior}",
+                f"[{linea}/{tipo}/{numero_local}] Posible reinicio de "
+                f"TIEMPO_TRANS: JSONL={tt_anterior} min, OPC={tt_actual} min. "
+                "Se espera una segunda observacion antes de cortar el ciclo.",
+            )
+            return {
+                "decision": self.RECON_CONFIRMAR_TT,
+                "id_ciclo": id_ciclo_anterior,
+                "archivo": archivo_historial,
+                "historial": historial,
+            }
+
+        logger.warning(
+            "[%s/%s/%s] Reinicio de TIEMPO_TRANS confirmado: "
+            "JSONL=%s min, OPC=%s min. El ciclo %s se cierra como CANCELADO "
+            "en su ultima captura conocida (%s).",
+            linea,
+            tipo,
+            numero_local,
+            tt_anterior,
+            tt_actual,
+            id_ciclo_anterior,
+            ultimo["tiempo"],
+        )
+        ok = self.finalizar_ciclo_completo(
+            id_ciclo=id_ciclo_anterior,
+            estado_maquina="CANCELADO",
+            archivo_historial=archivo_historial,
+            equipo_key=equipo_key,
+            tipo=tipo,
+            fecha_fin_forzada=fecha_ultima_captura,
+            session=session,
+        )
+        if not ok:
             raise RuntimeError(
-                f"[{linea}/{tipo}/{numero_local}] Historial pendiente sin "
-                "idCiclo; no se descarta automaticamente"
+                f"No se pudo cerrar el ciclo {id_ciclo_anterior}; el JSONL "
+                "queda .processing y el equipo permanece bloqueado"
             )
 
-        return []
+        self._tt_retrocesos.pop(equipo_key, None)
+        self._equipos_pendientes_reconciliacion.discard(equipo_key)
+        return {
+            "decision": self.RECON_NUEVO_CICLO,
+            "id_ciclo": None,
+            "archivo": None,
+            "historial": [],
+        }
 
     # -----------------------------------------------------------------------
     # BD \u2014 ciclos
     # -----------------------------------------------------------------------
 
-    def _obtener_ciclo_activo(self, id_equipo):
+    def _obtener_ciclo_activo(self, session: Session, id_equipo):
         try:
             return (
-                self.session.query(Ciclo)
+                session.query(Ciclo)
                 .filter(Ciclo.idEquipo == id_equipo, Ciclo.fecha_fin.is_(None))
                 .order_by(Ciclo.id.desc())
                 .first()
@@ -1139,11 +1566,11 @@ class ObtenerNodosOpcUA:
             logger.error(f"Error buscando ciclo activo para equipo {id_equipo}: {e}")
             return None
 
-    def _cerrar_ciclo_bd(self, ciclo: Ciclo, estado_maquina: str):
+    def _cerrar_ciclo_bd(self, session: Session, ciclo: Ciclo, estado_maquina: str):
         """
         Cierre m�nimo de un ciclo directamente en BD, sin historial JSON.
-        Se usa cuando se detecta una inconsistencia de lote en BD durante
-        _resolver_id_ciclo (el ciclo abierto pertenece a un lote diferente).
+        Se conserva para compatibilidad con cierres que no tienen JSONL.
+        El lote no participa de esta decision.
         """
         try:
             if ciclo.fecha_fin is not None:
@@ -1153,113 +1580,153 @@ class ObtenerNodosOpcUA:
             ciclo.estadoMaquina      = estado_maquina
             ciclo.cantidadPausas     = 0
             ciclo.tiempoTranscurrido = _delta_str(ciclo.fecha_inicio, fecha_fin)
-            self.session.commit()
+            session.commit()
             logger.warning(
-                f"Ciclo BD {ciclo.id} (lote='{ciclo.lote}') cerrado como "
-                f"'{estado_maquina}' por inconsistencia de lote."
+                f"Ciclo BD {ciclo.id} cerrado como '{estado_maquina}' "
+                "sin historial JSONL."
             )
         except Exception as e:
-            self.session.rollback()
+            session.rollback()
             logger.error(f"Error en _cerrar_ciclo_bd (ciclo={ciclo.id}): {e}")
 
-    def _resolver_id_ciclo(self, historial_actual, id_equipo, lote_ciclo,
-                            receta_id, datos_equipo, estado_actual):
+    def _resolver_id_ciclo(
+        self,
+        session: Session,
+        decision_reconciliacion: str,
+        id_ciclo_reconciliado: int | None,
+        id_equipo: int,
+        lote_ciclo: str,
+        receta_id: int | None,
+        datos_equipo: dict,
+        estado_actual: str,
+    ) -> int:
         """
-        Determina el id del ciclo activo.
+        Resuelve un id real de MySQL sin utilizar el lote como identidad.
 
-        Prioridad:
-          1. idCiclo del historial JSON \u2014 solo si el lote coincide.
-             (_sanear_historial_por_lote ya garantiz� la consistencia,
-             pero esta comprobaci�n act�a como segunda l�nea de defensa.)
-          2. Ciclo abierto en BD para este equipo \u2014 solo si el lote coincide.
-             Si el ciclo en BD tiene lote diferente, se cierra como CANCELADO
-             y se sigue al paso 3.
-          3. Crear ciclo nuevo en BD.
+        - MISMO_CICLO: verifica y reutiliza exclusivamente el id del JSONL.
+        - NUEVO_CICLO: exige que el anterior ya este cerrado y crea otro.
+        - SIN_HISTORIAL: reutiliza el unico ciclo abierto del equipo solamente
+          para recuperar la ventana entre el commit de creacion y la primera
+          escritura JSONL; si no existe, crea uno.
+
+        Nunca genera ids locales, aleatorios ni hashes.
         """
-        try:
-            # 1. Del historial \u2014 solo si el lote coincide
-            if historial_actual:
-                lote_json = self._lote_del_historial(historial_actual)
-                if lote_json and lote_ciclo and lote_json == lote_ciclo:
-                    ultimo_id = historial_actual[-1].get("idCiclo")
-                    if ultimo_id:
-                        return ultimo_id
-                elif lote_json and lote_ciclo and lote_json != lote_ciclo:
-                    # Discrepancia no capturada por el saneamiento previo
-                    logger.warning(
-                        f"_resolver_id_ciclo: lote JSON '{lote_json}' != "
-                        f"lote OPC '{lote_ciclo}'. No se reutiliza idCiclo del historial."
-                    )
-                else:
-                    # Alguno de los dos lotes est� vac�o: usar el id igualmente
-                    # (caso transitorio al arrancar el sistema)
-                    ultimo_id = historial_actual[-1].get("idCiclo")
-                    if ultimo_id:
-                        return ultimo_id
+        if decision_reconciliacion == self.RECON_MISMO_CICLO:
+            if id_ciclo_reconciliado is None:
+                raise RuntimeError(
+                    "La reconciliacion indico MISMO_CICLO sin idCiclo"
+                )
+            ciclo = session.query(Ciclo).filter_by(
+                id=int(id_ciclo_reconciliado)
+            ).first()
+            if not ciclo:
+                raise RuntimeError(
+                    f"El idCiclo {id_ciclo_reconciliado} del JSONL no existe "
+                    "en MySQL"
+                )
+            if int(ciclo.idEquipo) != int(id_equipo):
+                raise RuntimeError(
+                    f"El ciclo {ciclo.id} pertenece al equipo "
+                    f"{ciclo.idEquipo}, no al {id_equipo}"
+                )
+            if ciclo.fecha_fin is not None:
+                raise RuntimeError(
+                    f"El ciclo {ciclo.id} del JSONL ya esta cerrado en MySQL"
+                )
+            return int(ciclo.id)
 
-            # 2. Ciclo abierto en BD \u2014 verificar lote
-            ciclo_activo = self._obtener_ciclo_activo(id_equipo)
-            if ciclo_activo:
-                lote_bd = str(ciclo_activo.lote or "").strip()
-                if not lote_ciclo or not lote_bd or lote_bd == lote_ciclo:
-                    # Coincide o alguno est� vac�o \u2192 reutilizar
-                    return ciclo_activo.id
-                else:
-                    # Lote diferente \u2192 inconsistencia en BD
-                    logger.warning(
-                        f"Ciclo activo BD {ciclo_activo.id} tiene lote '{lote_bd}' "
-                        f"pero OPC informa lote '{lote_ciclo}'. "
-                        f"Se cierra el ciclo BD y se crea uno nuevo."
-                    )
-                    self._cerrar_ciclo_bd(ciclo_activo, "CANCELADO")
+        if decision_reconciliacion not in {
+            self.RECON_SIN_HISTORIAL,
+            self.RECON_NUEVO_CICLO,
+        }:
+            raise RuntimeError(
+                "No se puede resolver un ciclo mientras la reconciliacion "
+                f"esta en {decision_reconciliacion}"
+            )
 
-            # 3. Crear ciclo nuevo
-            id_ciclo = self.guardarEnBaseCiclo({
-                "estadoMaquina":  estado_actual,
+        ciclo_activo = self._obtener_ciclo_activo(session, id_equipo)
+        if decision_reconciliacion == self.RECON_SIN_HISTORIAL and ciclo_activo:
+            logger.warning(
+                "Equipo %s sin JSONL, pero con ciclo MySQL abierto %s. "
+                "Se reutiliza por idEquipo para recuperar una posible "
+                "interrupcion entre el commit y la primera escritura.",
+                id_equipo,
+                ciclo_activo.id,
+            )
+            return int(ciclo_activo.id)
+
+        if decision_reconciliacion == self.RECON_NUEVO_CICLO and ciclo_activo:
+            raise RuntimeError(
+                f"No se crea un ciclo nuevo: el equipo {id_equipo} aun tiene "
+                f"abierto el ciclo MySQL {ciclo_activo.id}"
+            )
+
+        if receta_id is None:
+            raise RuntimeError(
+                "No se crea el ciclo porque la receta no pudo confirmarse "
+                "en MySQL"
+            )
+
+        id_ciclo = self.guardarEnBaseCiclo(
+            {
+                "estadoMaquina": estado_actual,
                 "cantidadTorres": int(datos_equipo.get("CANTIDAD_TORRES") or 0),
-                "lote":           lote_ciclo or "",
-                "fecha_inicio":   datetime.now(),
-                "peso":           int(datos_equipo.get("PESO_PRODUCTO") or 0),
-                "idEquipo":       id_equipo,
-                "idReceta":       receta_id,
-            })
-            if id_ciclo is not None:
-                return id_ciclo
-            return self.obtener_id_ciclo_existente(lote_ciclo, id_equipo)
+                "lote": lote_ciclo or "",
+                "fecha_inicio": datetime.now().replace(microsecond=0),
+                "peso": int(datos_equipo.get("PESO_PRODUCTO") or 0),
+                "idEquipo": id_equipo,
+                "idReceta": receta_id,
+            },
+            session=session,
+        )
+        if id_ciclo is None:
+            raise RuntimeError(
+                "MySQL no confirmo la creacion del ciclo; no se escribira "
+                "ningun JSONL con un id inexistente"
+            )
+        return int(id_ciclo)
 
-        except Exception as e:
-            logger.error(f"Error resolviendo id de ciclo: {e}")
-            return self.obtener_id_ciclo_existente(lote_ciclo, id_equipo)
+    def obtener_o_crear_receta(self, receta_opc, numero_receta=None, session=None):
+        # Compatibilidad: si no se recibe una sesion se abre y se cierra una
+        # propia, de modo que el metodo sigue siendo invocable desde afuera.
+        if session is None:
+            with self._sesion_bd() as propia:
+                return self.obtener_o_crear_receta(
+                    receta_opc, numero_receta, propia
+                )
 
-    def obtener_o_crear_receta(self, receta_opc, numero_receta=None):
         try:
             nombre_receta = receta_opc.get("NOMBRE") if receta_opc else None
             if not nombre_receta:
                 nombre_receta = f"RECETA_{int(numero_receta or 0):02}"
             nro_paso = receta_opc.get("PASOS", 0) if receta_opc else 0
-            tipo_fin = receta_opc.get("TIPO CORTE ENFRIADO", False) if receta_opc else False
+            tipo_fin = receta_opc.get("TIPO CORTE", False) if receta_opc else False
 
-            receta = self.session.query(Receta).filter(Receta.nombre == nombre_receta).first()
+            receta = session.query(Receta).filter(Receta.nombre == nombre_receta).first()
             if receta:
                 receta.nroPaso = nro_paso
                 receta.tipoFin = tipo_fin
-                
-                self.session.commit()
+
+                session.commit()
                 return receta.id
 
-            ultimo_id = self.session.query(Receta).order_by(Receta.id.desc()).first()
+            ultimo_id = session.query(Receta).order_by(Receta.id.desc()).first()
             nuevo_id  = 1 if not ultimo_id else ultimo_id.id + 1
-            self.session.add(Receta(id=nuevo_id, nombre=nombre_receta,
-                                    nroPaso=nro_paso, tipoFin=tipo_fin))
-            self.session.commit()
+            session.add(Receta(id=nuevo_id, nombre=nombre_receta,
+                               nroPaso=nro_paso, tipoFin=tipo_fin))
+            session.commit()
             logger.info(f"Nueva receta creada - ID: {nuevo_id}, Nombre: {nombre_receta}")
             return nuevo_id
         except Exception as e:
-            self.session.rollback()
+            session.rollback()
             logger.error(f"Error al obtener/crear receta: {e}")
             return None
 
-    def guardarEnBaseCiclo(self, datos):
+    def guardarEnBaseCiclo(self, datos, session=None):
+        if session is None:
+            with self._sesion_bd() as propia:
+                return self.guardarEnBaseCiclo(datos, session=propia)
+
         try:
             nuevo_ciclo = Ciclo(
                 estadoMaquina  = datos["estadoMaquina"],
@@ -1270,8 +1737,8 @@ class ObtenerNodosOpcUA:
                 idEquipo       = datos["idEquipo"],
                 idReceta       = datos["idReceta"],
             )
-            self.session.add(nuevo_ciclo)
-            self.session.commit()
+            session.add(nuevo_ciclo)
+            session.commit()
             logger.info(
                 f"\033[1;93m[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
                 f"{self.obtener_nombre_equipo(datos['idEquipo'])} "
@@ -1279,17 +1746,23 @@ class ObtenerNodosOpcUA:
             )
             return nuevo_ciclo.id
         except Exception as e:
-            self.session.rollback()
+            session.rollback()
             logger.error(f"Error al guardar nuevo ciclo: {e}")
             return None
 
-    def obtener_ultimo_ciclo_finalizado(self, id_equipo):
+    def obtener_ultimo_ciclo_finalizado(self, id_equipo, session=None):
+        if session is None:
+            with self._sesion_bd() as propia:
+                return self.obtener_ultimo_ciclo_finalizado(
+                    id_equipo, session=propia
+                )
+
         try:
             ultimo = (
-                self.session.query(Ciclo)
+                session.query(Ciclo)
                 .filter(
                     Ciclo.idEquipo == id_equipo,
-                    Ciclo.estadoMaquina.in_(["FINALIZADO", "CANCELADO"]),
+                    Ciclo.estadoMaquina.in_(["FINALIZADO", "CANCELADO", "INACTIVO"]),
                     Ciclo.fecha_fin.isnot(None),
                 )
                 .order_by(Ciclo.fecha_fin.desc())
@@ -1299,22 +1772,25 @@ class ObtenerNodosOpcUA:
         except Exception:
             return None
 
-    def obtener_id_ciclo_existente(self, lote, idEquipo):
+    def obtener_id_ciclo_existente(self, lote, idEquipo, session=None):
+        """Compatibilidad: devuelve un ciclo abierto real, nunca inventa ids."""
+        if session is None:
+            with self._sesion_bd() as propia:
+                return self.obtener_id_ciclo_existente(
+                    lote, idEquipo, session=propia
+                )
+
         try:
             ciclo = (
-                self.session.query(Ciclo)
-                .filter_by(lote=lote, idEquipo=idEquipo, fecha_fin=None)
+                session.query(Ciclo)
+                .filter_by(idEquipo=idEquipo, fecha_fin=None)
                 .order_by(Ciclo.id.desc())
                 .first()
             )
-            if ciclo:
-                return ciclo.id
-            import hashlib
-            return int(hashlib.md5(f"{lote}-{idEquipo}".encode()).hexdigest()[:8], 16)
+            return ciclo.id if ciclo else None
         except Exception as e:
-            logger.error(f"Error generando ID para ciclo: {e}")
-            import random
-            return random.randint(1, 1_000_000)
+            logger.error(f"Error consultando ciclo abierto real: {e}")
+            return None
 
     # -----------------------------------------------------------------------
     # SensoresIO \u2014 trazabilidad en tiempo real
@@ -1323,7 +1799,8 @@ class ObtenerNodosOpcUA:
     def _io_map_para_tipo(self, tipo: str) -> dict[str, int]:
         return IO_SENSOR_MAP_COCINA if tipo == "COCINA" else IO_SENSOR_MAP_ENFRIADOR
 
-    def _persistir_tramo_io(self, id_ciclo: int, id_sensor: int, valor: bool,
+    def _persistir_tramo_io(self, session: Session, id_ciclo: int,
+                             id_sensor: int, valor: bool,
                              fecha_inicio: datetime, fecha_fin: datetime,
                              confirmar: bool = True) -> bool:
         """
@@ -1331,14 +1808,14 @@ class ObtenerNodosOpcUA:
         Idempotente: la unicidad se verifica por (idCiclo, idSensor, fechaInicio).
         """
         try:
-            existe = self.session.query(SensoresIO).filter_by(
+            existe = session.query(SensoresIO).filter_by(
                 idCiclo=id_ciclo,
                 idSensor=id_sensor,
                 fechaInicio=fecha_inicio,
             ).first()
             if existe:
                 return True
-            self.session.add(SensoresIO(
+            session.add(SensoresIO(
                 idSensor    = id_sensor,
                 valor       = valor,
                 fechaInicio = fecha_inicio,
@@ -1346,12 +1823,12 @@ class ObtenerNodosOpcUA:
                 idCiclo     = id_ciclo,
             ))
             if confirmar:
-                self.session.commit()
+                session.commit()
             else:
-                self.session.flush()
+                session.flush()
             return True
         except Exception as e:
-            self.session.rollback()
+            session.rollback()
             logger.error(
                 f"Error persistiendo tramo IO "
                 f"(ciclo={id_ciclo}, sensor={id_sensor}): {e}"
@@ -1360,7 +1837,8 @@ class ObtenerNodosOpcUA:
                 raise
             return False
 
-    def _actualizar_io_state(self, equipo_key: str, tipo: str, datos: dict,
+    def _actualizar_io_state(self, session: Session, equipo_key: str,
+                              tipo: str, datos: dict,
                               id_ciclo: int, ahora: datetime):
         """
         Llamado cada segundo mientras el ciclo esta activo.
@@ -1399,7 +1877,7 @@ class ObtenerNodosOpcUA:
                 if tramo["id_ciclo"] != id_ciclo:
                     # Ciclo nuevo: cerrar tramo del ciclo anterior inmediatamente
                     persistido = self._persistir_tramo_io(
-                        tramo["id_ciclo"], id_sensor,
+                        session, tramo["id_ciclo"], id_sensor,
                         tramo["valor"], tramo["inicio"], ahora,
                     )
                     if not persistido:
@@ -1412,7 +1890,7 @@ class ObtenerNodosOpcUA:
                 elif tramo["valor"] != valor:
                     # Valor cambio: cerrar tramo actual y abrir nuevo
                     persistido = self._persistir_tramo_io(
-                        id_ciclo, id_sensor,
+                        session, id_ciclo, id_sensor,
                         tramo["valor"], tramo["inicio"], ahora,
                     )
                     if not persistido:
@@ -1424,7 +1902,8 @@ class ObtenerNodosOpcUA:
                     }
                 # Valor igual y mismo ciclo: no hacer nada
 
-    def _cerrar_io_tramos_equipo(self, equipo_key: str, tipo: str,
+    def _cerrar_io_tramos_equipo(self, session: Session, equipo_key: str,
+                                  tipo: str,
                                   id_ciclo: int, fecha_fin: datetime,
                                   limpiar_estado: bool = True):
         """
@@ -1445,7 +1924,7 @@ class ObtenerNodosOpcUA:
             if tramo["id_ciclo"] != id_ciclo:
                 continue  # Tramo de un ciclo anterior, ya fue persistido
             self._persistir_tramo_io(
-                id_ciclo, id_sensor,
+                session, id_ciclo, id_sensor,
                 tramo["valor"], tramo["inicio"], fecha_fin,
                 confirmar=False,
             )
@@ -1624,7 +2103,8 @@ class ObtenerNodosOpcUA:
         )
         return resultado
 
-    def _persistir_sensores_aa(self, id_ciclo: int, historial: list) -> bool:
+    def _persistir_sensores_aa(self, session: Session, id_ciclo: int,
+                                historial: list) -> bool:
         """
         Inserta en SensoresAA las muestras filtradas obtenidas del JSONL.
         Idempotente: si ya existen filas para este id_ciclo, no inserta nada.
@@ -1633,7 +2113,7 @@ class ObtenerNodosOpcUA:
         Returns True si OK, False si hubo error.
         """
         try:
-            ya_existen = self.session.query(SensoresAA).filter_by(
+            ya_existen = session.query(SensoresAA).filter_by(
                 idCiclo=id_ciclo
             ).first()
             if ya_existen:
@@ -1670,8 +2150,8 @@ class ObtenerNodosOpcUA:
                     ))
 
             if objetos:
-                self.session.bulk_save_objects(objetos)
-            self.session.flush()
+                session.bulk_save_objects(objetos)
+            session.flush()
             logger.info(
                 f"SensoresAA: {len(objetos)} filas preparadas "
                 f"para ciclo {id_ciclo}."
@@ -1688,7 +2168,8 @@ class ObtenerNodosOpcUA:
     # EstadoCiclo \u2014 persistencia de tramos al cierre del ciclo
     # -----------------------------------------------------------------------
 
-    def _persistir_estados_ciclo(self, id_ciclo: int, tramos: list) -> bool:
+    def _persistir_estados_ciclo(self, session: Session, id_ciclo: int,
+                                  tramos: list) -> bool:
         """
         Inserta tramos de estado en EstadoCiclo.
         Idempotente: si ya existen filas para este id_ciclo, no inserta nada.
@@ -1697,7 +2178,7 @@ class ObtenerNodosOpcUA:
         Returns True si OK, False si hubo error.
         """
         try:
-            ya_existen = self.session.query(EstadoCiclo).filter_by(
+            ya_existen = session.query(EstadoCiclo).filter_by(
                 idCiclo=id_ciclo
             ).first()
             if ya_existen:
@@ -1719,8 +2200,8 @@ class ObtenerNodosOpcUA:
                 )
                 for t in tramos
             ]
-            self.session.bulk_save_objects(objetos)
-            self.session.flush()
+            session.bulk_save_objects(objetos)
+            session.flush()
             logger.info(
                 f"EstadoCiclo: {len(objetos)} tramos preparados "
                 f"para ciclo {id_ciclo}."
@@ -1744,6 +2225,8 @@ class ObtenerNodosOpcUA:
         archivo_historial: str,
         equipo_key:        str,
         tipo:              str,
+        fecha_fin_forzada: datetime | None = None,
+        session:           Session | None = None,
     ) -> bool:
         """
         Cierre completo y atomico de un ciclo.
@@ -1756,12 +2239,29 @@ class ObtenerNodosOpcUA:
           5. Ejecutar un unico commit.
           6. Archivar como .done solamente despues del commit.
 
+        Si fecha_fin_forzada se informa (reinicio de TIEMPO_TRANS), el ciclo se
+        cierra en la ultima captura JSONL conocida y no en la reconexion.
+
         Si algo falla se ejecuta rollback y el .processing se conserva.
 
         Returns:
             True  -> ciclo cerrado correctamente
             False -> ya estaba cerrado o hubo un error
         """
+        # Todo el cierre ocurre dentro de una unica sesion y de un unico
+        # commit. Si el llamador no aporta una, se abre y se cierra aqui.
+        if session is None:
+            with self._sesion_bd() as propia:
+                return self.finalizar_ciclo_completo(
+                    id_ciclo=id_ciclo,
+                    estado_maquina=estado_maquina,
+                    archivo_historial=archivo_historial,
+                    equipo_key=equipo_key,
+                    tipo=tipo,
+                    fecha_fin_forzada=fecha_fin_forzada,
+                    session=propia,
+                )
+
         archivo_processing = None
         try:
             if not archivo_historial or not os.path.exists(archivo_historial):
@@ -1786,7 +2286,7 @@ class ObtenerNodosOpcUA:
                     f"encontrados={sorted(ciclos_en_archivo)}"
                 )
 
-            ciclo = self.session.query(Ciclo).filter_by(id=id_ciclo).first()
+            ciclo = session.query(Ciclo).filter_by(id=id_ciclo).first()
             if not ciclo:
                 logger.warning(f"Ciclo {id_ciclo} no encontrado en BD.")
                 return False
@@ -1795,38 +2295,58 @@ class ObtenerNodosOpcUA:
             fecha_fin = (
                 ciclo.fecha_fin
                 if ya_estaba_cerrado
-                else datetime.now().replace(microsecond=0)
+                else (
+                    fecha_fin_forzada.replace(microsecond=0)
+                    if fecha_fin_forzada is not None
+                    else datetime.now().replace(microsecond=0)
+                )
             )
+
+            fecha_inicio = ciclo.fecha_inicio or _parse_tiempo(
+                historial[0]["tiempo"]
+            )
+            if fecha_fin < fecha_inicio:
+                raise ValueError(
+                    f"fecha_fin={fecha_fin} anterior a fecha_inicio="
+                    f"{fecha_inicio} para ciclo {id_ciclo}"
+                )
 
             # --- Tramos de estado -----------------------------------------
             tramos = _construir_tramos_estado(historial)
 
-            # Cerrar el ultimo tramo con la fecha_fin real del ciclo
-            # (el historial puede terminar algunos segundos antes)
-            if tramos:
-                tramos[-1]["fechaFin"]           = fecha_fin
-                tramos[-1]["tiempoTranscurrido"] = _delta_str(
-                    tramos[-1]["fechaInicio"], fecha_fin
-                )
+            # Llevar los tramos hasta la fecha_fin real del ciclo. Si el
+            # historial termino mucho antes del cierre, ese intervalo se
+            # registra como periodo sin datos en lugar de estirar el ultimo
+            # estado observado.
+            _cerrar_tramos_hasta(tramos, fecha_fin)
 
             # cantidadPausas = cantidad de tramos con nombre "PAUSADO"
             cantidad_pausas = sum(1 for t in tramos if t["nombre"] == "PAUSADO")
 
-            # Tiempo total
-            fecha_inicio = ciclo.fecha_inicio or _parse_tiempo(
-                historial[0]["tiempo"]
+            tramos_sin_datos = sum(
+                1 for t in tramos if t["nombre"] == ESTADO_SIN_DATOS
             )
+            if tramos_sin_datos:
+                logger.warning(
+                    "[CICLO %s] Se registraron %s periodos '%s'. Ese tiempo "
+                    "no se atribuye a ningun estado productivo.",
+                    id_ciclo,
+                    tramos_sin_datos,
+                    ESTADO_SIN_DATOS,
+                )
+
+            # Tiempo total
             tiempo_transcurrido = _delta_str(fecha_inicio, fecha_fin)
 
             # --- Persistencias (flush sin commit) -------------------------
             historial_filtrado = self._filtrar_historial_para_bd(historial)
             ok_aa = self._persistir_sensores_aa(
-                id_ciclo, historial_filtrado
+                session, id_ciclo, historial_filtrado
             )
             if not ok_aa:
                 raise RuntimeError("Fallo _persistir_sensores_aa")
 
-            ok_ec = self._persistir_estados_ciclo(id_ciclo, tramos)
+            ok_ec = self._persistir_estados_ciclo(session, id_ciclo, tramos)
             if not ok_ec:
                 raise RuntimeError("Fallo _persistir_estados_ciclo")
 
@@ -1834,6 +2354,7 @@ class ObtenerNodosOpcUA:
             # tramos abiertos participan ahora del mismo commit del cierre.
             if not ya_estaba_cerrado:
                 self._cerrar_io_tramos_equipo(
+                    session,
                     equipo_key,
                     tipo,
                     id_ciclo,
@@ -1849,7 +2370,7 @@ class ObtenerNodosOpcUA:
                 ciclo.tiempoTranscurrido = tiempo_transcurrido
 
             # --- COMMIT unico (SensoresAA + EstadoCiclo + IO + Ciclo) ------
-            self.session.commit()
+            session.commit()
             self._io_state.pop(equipo_key, None)
 
             logger.info(
@@ -1866,7 +2387,10 @@ class ObtenerNodosOpcUA:
             return True
 
         except Exception as e:
-            self.session.rollback()
+            try:
+                session.rollback()
+            except Exception:
+                pass
             logger.error(
                 f"Error en finalizar_ciclo_completo (ciclo={id_ciclo}): {e}. "
                 f"Historial JSONL conservado para reintento en "
@@ -1879,237 +2403,341 @@ class ObtenerNodosOpcUA:
     # -----------------------------------------------------------------------
 
     async def datosGenerales(self):
+        """
+        Punto de entrada asincronico del loop de main.py.
+
+        Toda la lectura del cache, las consultas MySQL y la escritura de los
+        JSONL se ejecutan en un hilo aparte. El event loop de FastAPI queda
+        libre para atender WebSockets y peticiones HTTP mientras dura la
+        pasada, que con 14 equipos puede tardar bastante mas de un segundo si
+        MySQL responde lento.
+        """
+        if not self.conexion_servidor.connected:
+            return {
+                "datos-cocinas":     [],
+                "datos-enfriadores": [],
+            }
+
+        return await asyncio.to_thread(self._datos_generales_sync)
+
+    def _datos_generales_sync(self):
+        """
+        Recorre los equipos fuera del event loop. Un fallo de un equipo no
+        interrumpe a los demas.
+        """
         resultado = {
             "datos-cocinas":     [],
             "datos-enfriadores": [],
         }
 
-        try:
-            for equipo in self._equipos:
-                try:
-                    linea        = equipo["linea"]
-                    tipo         = equipo["tipo"]
-                    numero_local = equipo["numero_local"]
-                    id_equipo    = equipo["id_equipo"]
+        # Defensa adicional: el Event de main.py normalmente ya detiene este
+        # loop, pero nunca se procesa el cache si el cliente esta desconectado.
+        if not self.conexion_servidor.connected:
+            return resultado
 
-                    datos = self._leer_datos_equipo(equipo)
+        # Copia local de la lista: iniciar_suscripcion() puede reemplazarla
+        # mientras esta pasada esta en curso.
+        equipos = list(self._equipos)
 
-                    estado_actual   = self._estado_a_texto(datos.get("ESTADO_EQUIPO", 0))
-                    key_estado      = f"{linea}-{tipo}-{numero_local}"
+        for equipo in equipos:
+            try:
+                salida = self._procesar_equipo(equipo)
+            except Exception as e:
+                logger.error(
+                    f"Error procesando equipo "
+                    f"{equipo.get('linea')}/{equipo.get('tipo')}"
+                    f"/{equipo.get('numero_local')}: {e}"
+                )
+                continue
 
-                    numero_receta = int(datos.get("NUMERO_RECETA") or 0)
-                    receta_opc    = self._recetario_cache.get(numero_receta, {})
-                    nombre_receta = receta_opc.get("NOMBRE", f"RECETA_{numero_receta:02}")
+            if salida is None:
+                continue
 
-                    lote_ciclo = str(
-                        datos.get("LOTE_CICLO") or ""
-                    ).strip()
-                    archivo_historial = self._buscar_historial_pendiente(
-                        linea, tipo, numero_local
-                    )
-                    historial_actual = self._obtener_preview_jsonl(
-                        archivo_historial
-                    )
-
-                    if (
-                        estado_actual in self.ESTADOS_CONTINUOS
-                        and archivo_historial
-                    ):
-                        historial_actual = self._sanear_historial_por_lote(
-                            historial         = historial_actual,
-                            lote_actual       = lote_ciclo,
-                            estado_actual     = estado_actual,
-                            id_equipo         = id_equipo,
-                            archivo_historial = archivo_historial,
-                            equipo_key        = key_estado,
-                            linea             = linea,
-                            tipo              = tipo,
-                            numero_local      = numero_local,
-                        )
-                        if not historial_actual:
-                            archivo_historial = None
-
-                    # ---------------------------------------------------------
-                    # Ciclo activo: guardar muestra y actualizar IO state
-                    # ---------------------------------------------------------
-                    if estado_actual in self.ESTADOS_CONTINUOS:
-                        receta_id = self.obtener_o_crear_receta(receta_opc, numero_receta)
-                        id_ciclo  = self._resolver_id_ciclo(
-                            historial_actual = historial_actual,
-                            id_equipo        = id_equipo,
-                            lote_ciclo       = lote_ciclo,
-                            receta_id        = receta_id,
-                            datos_equipo     = datos,
-                            estado_actual    = estado_actual,
-                        )
-
-                        archivo_ciclo = self._archivo_historial(
-                            linea,
-                            tipo,
-                            numero_local,
-                            id_ciclo,
-                        )
-                        if (
-                            archivo_historial
-                            and os.path.abspath(archivo_historial)
-                            != os.path.abspath(archivo_ciclo)
-                        ):
-                            raise RuntimeError(
-                                "El ciclo resuelto no coincide con el archivo "
-                                f"pendiente: ciclo={id_ciclo} "
-                                f"archivo={archivo_historial}"
-                            )
-                        archivo_historial = archivo_ciclo
-
-                        # Timestamp sin microsegundos (consistencia con BD)
-                        ahora = datetime.now().replace(microsecond=0)
-
-                        nuevo_paso = {
-                            "tiempo":       ahora.strftime("%Y-%m-%d %H:%M:%S"),
-                            "estado":       estado_actual,
-                            "idCiclo":      id_ciclo,
-                            "lote":         lote_ciclo,
-                            "temp_agua":    datos.get("TEMP_AGUA"),
-                            "temp_ingreso": datos.get("TEMP_INGRESO"),
-                            "temp_prod":    datos.get("TEMP_PRODUCTO"),
-                            "niv_agua":     datos.get("NIVEL_AGUA"),
-                        }
-                        self._agregar_registro_jsonl(
-                            archivo_historial,
-                            nuevo_paso,
-                        )
-                        historial_actual = self._obtener_preview_jsonl(
-                            archivo_historial
-                        )
-
-                        # Trazabilidad IO \u2014 deteccion de cambios en tiempo real
-                        self._actualizar_io_state(key_estado, tipo, datos, id_ciclo, ahora)
-
-                    # ---------------------------------------------------------
-                    # Transicion a estado de fin (flanco unico)
-                    # ---------------------------------------------------------
-                    if estado_actual in self.ESTADOS_FIN:
-                        id_ciclo = None
-                        ultimo_registro = self._ultimo_registro_del_archivo(
-                            archivo_historial
-                        )
-                        if ultimo_registro:
-                            id_ciclo = ultimo_registro.get("idCiclo")
-                        if not id_ciclo:
-                            ciclo_activo = self._obtener_ciclo_activo(id_equipo)
-                            if ciclo_activo:
-                                id_ciclo = ciclo_activo.id
-
-                        if id_ciclo is not None and archivo_historial:
-                            ok = self.finalizar_ciclo_completo(
-                                id_ciclo          = id_ciclo,
-                                estado_maquina    = estado_actual,
-                                archivo_historial = archivo_historial,
-                                equipo_key        = key_estado,
-                                tipo              = tipo,
-                            )
-                            if ok:
-                                historial_actual = []
-                                archivo_historial = None
-                        elif id_ciclo is not None:
-                            ciclo_activo = self.session.query(Ciclo).filter_by(
-                                id=id_ciclo
-                            ).first()
-                            if ciclo_activo:
-                                self._cerrar_ciclo_bd(
-                                    ciclo_activo, estado_actual
-                                )
-
-                    # ---------------------------------------------------------
-                    # Armar payload WebSocket
-                    # ---------------------------------------------------------
-                    tiempo_transcurrido = (
-                        self.calcular_tiempo_transcurrido_jsonl(
-                            archivo_historial
-                        )
-                        if archivo_historial else "00:00:00"
-                    )
-                    ultimo_ciclo = self.obtener_ultimo_ciclo_finalizado(id_equipo)
-                    historial_websocket = self._historial_para_websocket(
-                        historial_actual
-                    )
-
-                    equipo_general = {
-                        "tipo":               tipo,
-                        "id":                 id_equipo,
-                        "linea":              linea,
-                        "estado":             estado_actual,
-                        "temp_agua":          _redondear_para_presentacion(
-                            datos.get("TEMP_AGUA")
-                        ),
-                        "temp_prod":          _redondear_para_presentacion(
-                            datos.get("TEMP_PRODUCTO")
-                        ),
-                        "temp_ingreso":       _redondear_para_presentacion(
-                            datos.get("TEMP_INGRESO")
-                        ),
-                        "niv_agua":           datos.get("NIVEL_AGUA"),
-                        "receta":             nombre_receta,
-                        "receta_paso_actual": datos.get("PASO_ACTUAL"),
-                        "tiempoTranscurrido": tiempo_transcurrido,
-                        "ultimo_ciclo":       ultimo_ciclo,
-                    }
-
-                    if tipo == "COCINA":
-                        equipo_detalle = {
-                            "num_cocina":    numero_local,
-                            "num_receta":    numero_receta,
-                            "nom_receta":    nombre_receta,
-                            "cant_torres":   datos.get("CANTIDAD_TORRES"),
-                            "tipo_fin":      datos.get("CICLO_TIPO_FIN"),
-                            "peso_producto": datos.get("PESO_PRODUCTO"),
-                            "lote_ciclo":    lote_ciclo,
-                            "sector_io": [{
-                                "filtro_succion_agua":  datos.get("FILTRO_SUCCION_AGUA"),
-                                "entrada_agua":         datos.get("CARGA_AGUA"),
-                                "bomba_recirculacion":  datos.get("BOMBA_CENTRIFUGA"),
-                                "vapor_serpentina":     datos.get("VAPOR_SERPENTINA"),
-                                "vapor_serpentina_acc": datos.get("VAPOR_SERPENTINA_ACC"),
-                                "vapor_vivo":           datos.get("VAPOR_VIVO"),
-                                "vapor_vivo_acc":       datos.get("VAPOR_VIVO_ACC"),
-                            }],
-                            "historial": historial_websocket,
-                        }
-                        resultado["datos-cocinas"].append([equipo_general, equipo_detalle])
-
-                    elif tipo == "ENFRIADOR":
-                        equipo_detalle = {
-                            "num_enfriador": numero_local,
-                            "num_receta":    numero_receta,
-                            "nom_receta":    nombre_receta,
-                            "cant_torres":   datos.get("CANTIDAD_TORRES"),
-                            "tipo_fin":      datos.get("CICLO_TIPO_FIN"),
-                            "peso_producto": datos.get("PESO_PRODUCTO"),
-                            "lote_ciclo":    lote_ciclo,
-                            "sector_io": [{
-                                "filtro_succion_agua":  datos.get("FILTRO_SUCCION_AGUA"),
-                                "entrada_agua":         datos.get("CARGA_AGUA"),
-                                "bomba_recirculacion":  datos.get("BOMBA_CENTRIFUGA"),
-                                "valvula_amoniaco":     datos.get("AMONIACO"),
-                                "valvula_amoniaco_acc": datos.get("AMONIACO_ACC"),
-                                "vapor_limpieza":       datos.get("VAPOR_LIMPIEZA"),
-                                "vapor_limpieza_acc":   datos.get("VAPOR_LIMPIEZA_ACC"),
-                            }],
-                            "historial": historial_websocket,
-                        }
-                        resultado["datos-enfriadores"].append([equipo_general, equipo_detalle])
-
-                except Exception as e:
-                    logger.error(
-                        f"Error procesando equipo "
-                        f"{equipo.get('linea')}/{equipo.get('tipo')}"
-                        f"/{equipo.get('numero_local')}: {e}"
-                    )
-
-        except Exception as e:
-            logger.error(f"Error general en datosGenerales: {e}")
+            clave, payload = salida
+            resultado[clave].append(payload)
 
         return resultado
+
+    def _procesar_equipo(self, equipo: dict):
+        """
+        Procesa un equipo completo dentro de una unica sesion SQLAlchemy que
+        se cierra siempre al terminar.
+
+        Devuelve None cuando el equipo no debe publicarse en esta pasada, o
+        una tupla (clave_resultado, payload) en caso contrario.
+        """
+        linea        = equipo["linea"]
+        tipo         = equipo["tipo"]
+        numero_local = equipo["numero_local"]
+        id_equipo    = equipo["id_equipo"]
+
+        with self._sesion_bd() as session:
+            datos = self._leer_datos_equipo(equipo)
+            key_estado = self._clave_equipo(
+                linea, tipo, numero_local
+            )
+
+            fotografia = self._datos_reconciliacion_frescos(
+                equipo,
+                datos,
+                key_estado,
+            )
+            if fotografia is None:
+                # Todavia no llegaron ESTADO_EQUIPO y TIEMPO_TRANS de
+                # la suscripcion actual. No usar el resto del cache.
+                return None
+            estado_actual, tt_actual = fotografia
+
+            if key_estado in self._tt_retrocesos:
+                confirmacion_directa = self._leer_confirmacion_tt_directa(
+                    equipo,
+                    key_estado,
+                )
+                if confirmacion_directa is None:
+                    return None
+                estado_actual, tt_actual = confirmacion_directa
+
+            numero_receta = int(datos.get("NUMERO_RECETA") or 0)
+            receta_opc    = self._recetario_cache.get(numero_receta, {})
+            nombre_receta = receta_opc.get("NOMBRE", f"RECETA_{numero_receta:02}")
+
+            lote_ciclo = str(
+                datos.get("LOTE_CICLO") or ""
+            ).strip()
+            archivo_historial = self._buscar_historial_pendiente(
+                linea, tipo, numero_local
+            )
+            if estado_actual in (
+                self.ESTADOS_CONTINUOS | self.ESTADOS_FIN
+            ):
+                reconciliacion = self._reconciliar_historial_por_tt(
+                    session=session,
+                    archivo_historial=archivo_historial,
+                    tt_actual=tt_actual,
+                    estado_actual=estado_actual,
+                    equipo_key=key_estado,
+                    linea=linea,
+                    tipo=tipo,
+                    numero_local=numero_local,
+                )
+            else:
+                # LIMPIEZA conserva el comportamiento visual anterior,
+                # pero no crea, cierra ni mezcla ciclos pendientes.
+                reconciliacion = {
+                    "decision": self.RECON_INDETERMINADA,
+                    "id_ciclo": None,
+                    "archivo": archivo_historial,
+                    "historial": self._obtener_preview_jsonl(
+                        archivo_historial
+                    ),
+                }
+
+            decision_reconciliacion = reconciliacion["decision"]
+            id_ciclo_reconciliado = reconciliacion["id_ciclo"]
+            archivo_historial = reconciliacion["archivo"]
+            historial_actual = reconciliacion["historial"]
+            operaciones_bloqueadas = decision_reconciliacion in {
+                self.RECON_CONFIRMAR_TT,
+                self.RECON_INDETERMINADA,
+            }
+
+            # ---------------------------------------------------------
+            # Ciclo activo: guardar muestra y actualizar IO state
+            # ---------------------------------------------------------
+            if (
+                estado_actual in self.ESTADOS_CONTINUOS
+                and not operaciones_bloqueadas
+            ):
+                receta_id = self.obtener_o_crear_receta(
+                    receta_opc, numero_receta, session=session
+                )
+                id_ciclo  = self._resolver_id_ciclo(
+                    session=session,
+                    decision_reconciliacion=decision_reconciliacion,
+                    id_ciclo_reconciliado=id_ciclo_reconciliado,
+                    id_equipo=id_equipo,
+                    lote_ciclo=lote_ciclo,
+                    receta_id=receta_id,
+                    datos_equipo=datos,
+                    estado_actual=estado_actual,
+                )
+
+                archivo_ciclo = self._archivo_historial(
+                    linea,
+                    tipo,
+                    numero_local,
+                    id_ciclo,
+                )
+                if (
+                    archivo_historial
+                    and os.path.abspath(archivo_historial)
+                    != os.path.abspath(archivo_ciclo)
+                ):
+                    raise RuntimeError(
+                        "El ciclo resuelto no coincide con el archivo "
+                        f"pendiente: ciclo={id_ciclo} "
+                        f"archivo={archivo_historial}"
+                    )
+                archivo_historial = archivo_ciclo
+
+                # Timestamp sin microsegundos (consistencia con BD)
+                ahora = datetime.now().replace(microsecond=0)
+
+                nuevo_paso = {
+                    "tiempo":       ahora.strftime("%Y-%m-%d %H:%M:%S"),
+                    "estado":       estado_actual,
+                    "idCiclo":      id_ciclo,
+                    "lote":         lote_ciclo,
+                    "tiempo_trans_opc": tt_actual,
+                    "temp_agua":    datos.get("TEMP_AGUA"),
+                    "temp_ingreso": datos.get("TEMP_INGRESO"),
+                    "temp_prod":    datos.get("TEMP_PRODUCTO"),
+                    "niv_agua":     datos.get("NIVEL_AGUA"),
+                }
+                self._agregar_registro_jsonl(
+                    archivo_historial,
+                    nuevo_paso,
+                )
+                historial_actual = self._obtener_preview_jsonl(
+                    archivo_historial
+                )
+
+                # Trazabilidad IO \u2014 deteccion de cambios en tiempo real
+                self._actualizar_io_state(
+                    session, key_estado, tipo, datos, id_ciclo, ahora
+                )
+
+            # ---------------------------------------------------------
+            # Transicion a estado de fin (flanco unico)
+            # ---------------------------------------------------------
+            if (
+                estado_actual in self.ESTADOS_FIN
+                and not operaciones_bloqueadas
+                and decision_reconciliacion
+                != self.RECON_NUEVO_CICLO
+            ):
+                id_ciclo = None
+                ultimo_registro = self._ultimo_registro_del_archivo(
+                    archivo_historial
+                )
+                if ultimo_registro:
+                    id_ciclo = ultimo_registro.get("idCiclo")
+                if not id_ciclo:
+                    ciclo_activo = self._obtener_ciclo_activo(
+                        session, id_equipo
+                    )
+                    if ciclo_activo:
+                        id_ciclo = ciclo_activo.id
+
+                if id_ciclo is not None and archivo_historial:
+                    ok = self.finalizar_ciclo_completo(
+                        id_ciclo          = id_ciclo,
+                        estado_maquina    = estado_actual,
+                        archivo_historial = archivo_historial,
+                        equipo_key        = key_estado,
+                        tipo              = tipo,
+                        session           = session,
+                    )
+                    if ok:
+                        historial_actual = []
+                        archivo_historial = None
+                elif id_ciclo is not None:
+                    ciclo_activo = session.query(Ciclo).filter_by(
+                        id=id_ciclo
+                    ).first()
+                    if ciclo_activo:
+                        self._cerrar_ciclo_bd(
+                            session, ciclo_activo, estado_actual
+                        )
+
+            # ---------------------------------------------------------
+            # Armar payload WebSocket
+            # ---------------------------------------------------------
+            tiempo_transcurrido = (
+                self.calcular_tiempo_transcurrido_jsonl(
+                    archivo_historial
+                )
+                if archivo_historial else "00:00:00"
+            )
+            ultimo_ciclo = self.obtener_ultimo_ciclo_finalizado(
+                id_equipo, session=session
+            )
+            historial_websocket = self._historial_para_websocket(
+                historial_actual
+            )
+
+            equipo_general = {
+                "tipo":               tipo,
+                "id":                 id_equipo,
+                "linea":              linea,
+                "estado":             estado_actual,
+                "temp_agua":          _redondear_para_presentacion(
+                    datos.get("TEMP_AGUA")
+                ),
+                "temp_prod":          _redondear_para_presentacion(
+                    datos.get("TEMP_PRODUCTO")
+                ),
+                "temp_ingreso":       _redondear_para_presentacion(
+                    datos.get("TEMP_INGRESO")
+                ),
+                "niv_agua":           datos.get("NIVEL_AGUA"),
+                "receta":             nombre_receta,
+                "receta_paso_actual": datos.get("PASO_ACTUAL"),
+                "tiempoTranscurrido": tiempo_transcurrido,
+                "ultimo_ciclo":       ultimo_ciclo,
+            }
+
+            if tipo == "COCINA":
+                equipo_detalle = {
+                    "num_cocina":    numero_local,
+                    "num_receta":    numero_receta,
+                    "nom_receta":    nombre_receta,
+                    "cant_torres":   datos.get("CANTIDAD_TORRES"),
+                    "tipo_fin":      datos.get("CICLO_TIPO_FIN"),
+                    "peso_producto": datos.get("PESO_PRODUCTO"),
+                    "lote_ciclo":    lote_ciclo,
+                    "sector_io": [{
+                        "filtro_succion_agua":  datos.get("FILTRO_SUCCION_AGUA"),
+                        "entrada_agua":         datos.get("CARGA_AGUA"),
+                        "bomba_recirculacion":  datos.get("BOMBA_CENTRIFUGA"),
+                        "vapor_serpentina":     datos.get("VAPOR_SERPENTINA"),
+                        "vapor_serpentina_acc": datos.get("VAPOR_SERPENTINA_ACC"),
+                        "vapor_vivo":           datos.get("VAPOR_VIVO"),
+                        "vapor_vivo_acc":       datos.get("VAPOR_VIVO_ACC"),
+                    }],
+                    "historial": historial_websocket,
+                }
+                return (
+                    "datos-cocinas",
+                    [equipo_general, equipo_detalle],
+                )
+
+            if tipo == "ENFRIADOR":
+                equipo_detalle = {
+                    "num_enfriador": numero_local,
+                    "num_receta":    numero_receta,
+                    "nom_receta":    nombre_receta,
+                    "cant_torres":   datos.get("CANTIDAD_TORRES"),
+                    "tipo_fin":      datos.get("CICLO_TIPO_FIN"),
+                    "peso_producto": datos.get("PESO_PRODUCTO"),
+                    "lote_ciclo":    lote_ciclo,
+                    "sector_io": [{
+                        "filtro_succion_agua":  datos.get("FILTRO_SUCCION_AGUA"),
+                        "entrada_agua":         datos.get("CARGA_AGUA"),
+                        "bomba_recirculacion":  datos.get("BOMBA_CENTRIFUGA"),
+                        "valvula_amoniaco":     datos.get("AMONIACO"),
+                        "valvula_amoniaco_acc": datos.get("AMONIACO_ACC"),
+                        "vapor_limpieza":       datos.get("VAPOR_LIMPIEZA"),
+                        "vapor_limpieza_acc":   datos.get("VAPOR_LIMPIEZA_ACC"),
+                    }],
+                    "historial": historial_websocket,
+                }
+                return (
+                    "datos-enfriadores",
+                    [equipo_general, equipo_detalle],
+                )
+
+        return None
 
     # -----------------------------------------------------------------------
     # Recetario \u2014 sincronizacion a BD
@@ -2120,25 +2748,29 @@ class ObtenerNodosOpcUA:
         self.guardarRecetaEnBD(self._recetario_cache)
 
     def guardarRecetaEnBD(self, datosPLC):
+        # La sesion se abre y se cierra en el contexto. Si la conexion falla,
+        # el error se registra tal cual, sin quedar enmascarado por un
+        # rollback sobre una variable inexistente.
         try:
-            db: Session = next(get_db())
-            for numero_receta, datosReceta in sorted(datosPLC.items(), key=lambda x: x[0]):
-                receta_id        = int(numero_receta) + 1
-                receta_existente = db.query(Receta).filter(Receta.id == receta_id).first()
-                nombre   = datosReceta.get("NOMBRE", f"RECETA_{int(numero_receta):02}")
-                nro_paso = datosReceta.get("PASOS", 0)
-                tipo_fin = datosReceta.get("TIPO_CORTE_ENFRIADO", False)
-                if receta_existente:
-                    receta_existente.nombre  = nombre
-                    receta_existente.nroPaso = nro_paso
-                    receta_existente.tipoFin = tipo_fin
-                else:
-                    db.add(Receta(id=receta_id, nombre=nombre,
-                                  nroPaso=nro_paso, tipoFin=tipo_fin))
-            db.commit()
+            with self._sesion_bd() as session:
+                for numero_receta, datosReceta in sorted(
+                    datosPLC.items(), key=lambda x: x[0]
+                ):
+                    receta_id        = int(numero_receta) + 1
+                    receta_existente = session.query(Receta).filter(
+                        Receta.id == receta_id
+                    ).first()
+                    nombre   = datosReceta.get("NOMBRE", f"RECETA_{int(numero_receta):02}")
+                    nro_paso = datosReceta.get("PASOS", 0)
+                    tipo_fin = datosReceta.get("TIPO_CORTE_ENFRIADO", False)
+                    if receta_existente:
+                        receta_existente.nombre  = nombre
+                        receta_existente.nroPaso = nro_paso
+                        receta_existente.tipoFin = tipo_fin
+                    else:
+                        session.add(Receta(id=receta_id, nombre=nombre,
+                                           nroPaso=nro_paso, tipoFin=tipo_fin))
+                session.commit()
             logger.info("Recetario sincronizado correctamente desde OPC")
         except Exception as e:
-            db.rollback()
             logger.error(f"Error al guardar/actualizar recetas en BD: {e}")
-        finally:
-            db.close()

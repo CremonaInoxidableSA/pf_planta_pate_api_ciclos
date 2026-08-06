@@ -1,3 +1,4 @@
 Add-Content .gitignore "`n__pycache__/"
 Add-Content .gitignore "*.py[cod]"
 /data/opc_historial/
+README.md
